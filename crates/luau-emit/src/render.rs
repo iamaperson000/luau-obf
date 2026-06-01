@@ -83,6 +83,8 @@ fn opname(k: OpKind) -> &'static str {
         OpKind::NewTable => "NewTable",
         OpKind::GetTable => "GetTable",
         OpKind::SetTable => "SetTable",
+        OpKind::GetUpval => "GetUpval",
+        OpKind::SetUpval => "SetUpval",
     }
 }
 

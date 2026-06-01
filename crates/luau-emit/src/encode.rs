@@ -32,6 +32,7 @@ pub fn encode_function(f: &LirFunction, opmap: &OpMap) -> Vec<u8> {
                 Operand::Const(c) => push_u16(&mut out, c.0),
                 Operand::Proto(p) => push_u16(&mut out, p.0),
                 Operand::SmallInt(n) => push_u16(&mut out, *n as u16),
+                Operand::UpvalIdx(u) => push_u16(&mut out, *u),
                 Operand::JmpTarget(label) => {
                     let target_byte = *label_byte.get(label).expect("label");
                     let delta = target_byte as i32 - after_this as i32;
@@ -64,9 +65,11 @@ mod tests {
             id: ProtoId(0),
             num_params: 0,
             num_regs: 0,
+            num_upvals: 0,
             consts: vec![],
             instrs: vec![LirInstr { op: OpKind::Return, operands: vec![Operand::Reg(Reg(0xFFFF))] }],
             label_positions: vec![],
+            closure_upval_sources: vec![],
         };
         let opmap = OpMap::new(&[0u8; 32]);
         let bytes = encode_function(&f, &opmap);

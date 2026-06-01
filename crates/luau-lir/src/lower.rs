@@ -2,7 +2,7 @@
 
 use crate::{
     BlockLabel, ConstIdx, LirError, LirFunction, LirInstr, LirProgram, OpKind, Operand, ProtoId,
-    Reg, RegMap,
+    Reg, RegMap, UpvalSource,
 };
 use luau_hir::{BinOp, UnOp};
 use luau_mir::{
@@ -21,11 +21,10 @@ fn lower_function(f: &MirFunction) -> Result<LirFunction, LirError> {
     let rm = RegMap::assign_all(f);
     let mut instrs: Vec<LirInstr> = Vec::new();
     let mut label_positions: Vec<(BlockLabel, u32)> = Vec::new();
+    let mut closure_upval_sources: Vec<Vec<UpvalSource>> = Vec::new();
 
     let label_of = |b: BlockId| BlockLabel(b.0);
 
-    // Compute the maximum number of args across all Call instructions so we can
-    // allocate a scratch window past all VLocal registers.
     let max_call_args: u16 = f
         .blocks
         .iter()
@@ -36,10 +35,10 @@ fn lower_function(f: &MirFunction) -> Result<LirFunction, LirError> {
         .max()
         .unwrap_or(0);
 
-    // scratch_base is the first register beyond all VLocal registers.
-    // The scratch window occupies scratch_base (callee) + scratch_base+1..N (args).
     let scratch_base: u16 = rm.num_regs();
-    let final_num_regs: u16 = if max_call_args > 0 || f.blocks.iter().flat_map(|b| &b.instrs).any(|i| matches!(i, MInstr::Call { .. })) {
+    let final_num_regs: u16 = if max_call_args > 0
+        || f.blocks.iter().flat_map(|b| &b.instrs).any(|i| matches!(i, MInstr::Call { .. }))
+    {
         scratch_base + 1 + max_call_args
     } else {
         rm.num_regs()
@@ -49,7 +48,7 @@ fn lower_function(f: &MirFunction) -> Result<LirFunction, LirError> {
         label_positions.push((label_of(block.id), instrs.len() as u32));
 
         for instr in &block.instrs {
-            lower_instr(instr, &rm, scratch_base, &mut instrs);
+            lower_instr(instr, &rm, scratch_base, &mut instrs, &mut closure_upval_sources);
         }
 
         let next_block = f.blocks.get(idx + 1).map(|b| b.id);
@@ -60,9 +59,11 @@ fn lower_function(f: &MirFunction) -> Result<LirFunction, LirError> {
         id: ProtoId(f.id.0 as u16),
         num_params: f.params.len() as u16,
         num_regs: final_num_regs,
+        num_upvals: f.upvalues.len() as u16,
         consts: f.consts.clone(),
         instrs,
         label_positions,
+        closure_upval_sources,
     })
 }
 
@@ -75,7 +76,13 @@ fn val_to_reg(v: MValue, rm: &RegMap) -> Reg {
     }
 }
 
-fn lower_instr(instr: &MInstr, rm: &RegMap, scratch_base: u16, out: &mut Vec<LirInstr>) {
+fn lower_instr(
+    instr: &MInstr,
+    rm: &RegMap,
+    scratch_base: u16,
+    out: &mut Vec<LirInstr>,
+    closure_upval_sources: &mut Vec<Vec<UpvalSource>>,
+) {
     match instr {
         MInstr::LoadConst { dst, src } => {
             out.push(LirInstr {
@@ -173,22 +180,40 @@ fn lower_instr(instr: &MInstr, rm: &RegMap, scratch_base: u16, out: &mut Vec<Lir
                 ],
             });
         }
-        MInstr::MakeClosure { dst, function, .. } => {
-            // Task 5 will use the upvalues field. For now, emit a Closure with
-            // no upvalue operands (Plan 2 behavior).
+        MInstr::MakeClosure { dst, function, upvalues } => {
+            let lir_upvals: Vec<UpvalSource> = upvalues.iter().map(|s| match s {
+                luau_mir::MirUpvalSource::Local(v) => UpvalSource::LocalReg(rm.get(*v)),
+                luau_mir::MirUpvalSource::ParentUpval(idx) => UpvalSource::ParentUpval(*idx as u16),
+            }).collect();
+            let closure_idx = closure_upval_sources.len() as i16;
+            closure_upval_sources.push(lir_upvals);
             out.push(LirInstr {
                 op: OpKind::Closure,
                 operands: vec![
                     Operand::Reg(Reg(rm.get(*dst))),
                     Operand::Proto(ProtoId(function.0 as u16)),
+                    Operand::SmallInt(closure_idx),
                 ],
             });
         }
-        MInstr::GetUpval { .. } | MInstr::SetUpval { .. } => {
-            // Task 5 will lower upvalue instructions to LIR opcodes.
-            // Unimplemented for now — functions with upvalues won't reach this path
-            // in the current test corpus.
-            todo!("LIR lowering for GetUpval/SetUpval — Task 5");
+        MInstr::GetUpval { dst, idx } => {
+            out.push(LirInstr {
+                op: OpKind::GetUpval,
+                operands: vec![
+                    Operand::Reg(Reg(rm.get(*dst))),
+                    Operand::UpvalIdx(*idx as u16),
+                ],
+            });
+        }
+        MInstr::SetUpval { idx, value } => {
+            let r = val_to_reg(*value, rm);
+            out.push(LirInstr {
+                op: OpKind::SetUpval,
+                operands: vec![
+                    Operand::UpvalIdx(*idx as u16),
+                    Operand::Reg(r),
+                ],
+            });
         }
         MInstr::NewTable { dst } => {
             out.push(LirInstr {
@@ -370,5 +395,23 @@ print(y)
         assert!(ops.contains(&OpKind::SetTable));
         assert!(ops.contains(&OpKind::GetTable));
         assert!(ops.contains(&OpKind::Call));
+    }
+
+    #[test]
+    fn closure_with_upvalue_emits_closure_with_source_list() {
+        let p = lir_of("local x = 1 local f = function() return x end");
+        let main = &p.functions[0];
+        // The Closure instruction should exist.
+        let has_closure = main.instrs.iter().any(|i| i.op == OpKind::Closure);
+        assert!(has_closure);
+        // Exactly one Closure → one source list with one entry.
+        assert_eq!(main.closure_upval_sources.len(), 1);
+        assert_eq!(main.closure_upval_sources[0].len(), 1);
+        // The inner proto reports num_upvals = 1.
+        let inner = &p.functions[1];
+        assert_eq!(inner.num_upvals, 1);
+        // The inner proto should contain a GetUpval.
+        let has_get_upval = inner.instrs.iter().any(|i| i.op == OpKind::GetUpval);
+        assert!(has_get_upval);
     }
 }
