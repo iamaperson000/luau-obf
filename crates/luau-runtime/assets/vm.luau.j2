@@ -48,12 +48,13 @@ local function read_i16(code, pos)
 end
 
 local vm_call
-vm_call = function(proto_id, args, nargs)
+vm_call = function(proto_id, args, nargs, upvals)
     local code = CODE[proto_id + 1]
     local consts = CONSTS[proto_id + 1]
     local meta = META[proto_id + 1]
     local num_params = meta[1]
     local num_regs = meta[2]
+    upvals = upvals or {}
     local regs = _tcreate(num_regs + 1)
     for i = 1, num_params do
         regs[i - 1] = args[i]
@@ -188,10 +189,26 @@ vm_call = function(proto_id, args, nargs)
         elseif op == OP_Closure then
             local a = read_u16(code, pc); pc = pc + 2
             local pid = read_u16(code, pc); pc = pc + 2
+            -- Skip the closure_idx operand (Rust-side encoding bookkeeping only).
+            pc = pc + 2
+            local n_upvals = read_u16(code, pc); pc = pc + 2
+            local new_upvals = {}
+            for u = 1, n_upvals do
+                local kind = _sbyte(code, pc); pc = pc + 1
+                local payload = read_u16(code, pc); pc = pc + 2
+                if kind == 0 then
+                    -- LocalReg: build a cell referencing current frame's regs.
+                    new_upvals[u] = { tbl = regs, key = payload }
+                else
+                    -- ParentUpval: share the existing cell from this frame's upvals.
+                    new_upvals[u] = upvals[payload + 1]
+                end
+            end
+            local captured = new_upvals
             regs[a] = function(...)
                 local pa = { ... }
                 local n = _select("#", ...)
-                return vm_call(pid, pa, n)
+                return vm_call(pid, pa, n, captured)
             end
         elseif op == OP_NewTable then
             local a = read_u16(code, pc); pc = pc + 2
@@ -206,6 +223,16 @@ vm_call = function(proto_id, args, nargs)
             local b = read_u16(code, pc); pc = pc + 2
             local c = read_u16(code, pc); pc = pc + 2
             regs[a][regs[b]] = regs[c]
+        elseif op == OP_GetUpval then
+            local a = read_u16(code, pc); pc = pc + 2
+            local idx = read_u16(code, pc); pc = pc + 2
+            local cell = upvals[idx + 1]
+            regs[a] = cell.tbl[cell.key]
+        elseif op == OP_SetUpval then
+            local idx = read_u16(code, pc); pc = pc + 2
+            local b = read_u16(code, pc); pc = pc + 2
+            local cell = upvals[idx + 1]
+            cell.tbl[cell.key] = regs[b]
         else
             _error("luau-obf: unknown opcode " .. _tostring(op))
         end
@@ -216,4 +243,4 @@ end
 -- Bootstrap: main proto is index 0; forward varargs.
 local main_args = { ... }
 local main_n = _select("#", ...)
-return vm_call(0, main_args, main_n)
+return vm_call(0, main_args, main_n, {})
