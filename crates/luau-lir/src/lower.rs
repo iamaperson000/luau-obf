@@ -173,7 +173,9 @@ fn lower_instr(instr: &MInstr, rm: &RegMap, scratch_base: u16, out: &mut Vec<Lir
                 ],
             });
         }
-        MInstr::MakeClosure { dst, function } => {
+        MInstr::MakeClosure { dst, function, .. } => {
+            // Task 5 will use the upvalues field. For now, emit a Closure with
+            // no upvalue operands (Plan 2 behavior).
             out.push(LirInstr {
                 op: OpKind::Closure,
                 operands: vec![
@@ -181,6 +183,12 @@ fn lower_instr(instr: &MInstr, rm: &RegMap, scratch_base: u16, out: &mut Vec<Lir
                     Operand::Proto(ProtoId(function.0 as u16)),
                 ],
             });
+        }
+        MInstr::GetUpval { .. } | MInstr::SetUpval { .. } => {
+            // Task 5 will lower upvalue instructions to LIR opcodes.
+            // Unimplemented for now — functions with upvalues won't reach this path
+            // in the current test corpus.
+            todo!("LIR lowering for GetUpval/SetUpval — Task 5");
         }
         MInstr::NewTable { dst } => {
             out.push(LirInstr {

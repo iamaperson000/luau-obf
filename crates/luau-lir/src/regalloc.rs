@@ -61,9 +61,7 @@ impl RegMap {
 fn visit_vlocals(instr: &luau_mir::Instr, mut f: impl FnMut(VLocal)) {
     use luau_mir::{Instr, Value};
     fn visit_value(v: Value, f: &mut impl FnMut(VLocal)) {
-        if let Value::VLocal(l) = v {
-            f(l);
-        }
+        if let Value::VLocal(l) = v { f(l); }
     }
     match instr {
         Instr::LoadConst { dst, .. } => f(*dst),
@@ -84,7 +82,16 @@ fn visit_vlocals(instr: &luau_mir::Instr, mut f: impl FnMut(VLocal)) {
             visit_value(*callee, &mut f);
             for a in args { visit_value(*a, &mut f); }
         }
-        Instr::MakeClosure { dst, .. } => f(*dst),
+        Instr::MakeClosure { dst, upvalues, .. } => {
+            f(*dst);
+            for src in upvalues {
+                if let luau_mir::MirUpvalSource::Local(v) = src {
+                    f(*v);
+                }
+            }
+        }
+        Instr::GetUpval { dst, .. } => f(*dst),
+        Instr::SetUpval { value, .. } => visit_value(*value, &mut f),
         Instr::NewTable { dst } => f(*dst),
         Instr::GetIndex { dst, obj, key } => {
             f(*dst);

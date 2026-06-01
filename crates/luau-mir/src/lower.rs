@@ -5,7 +5,7 @@ use crate::{
     SymbolMap, Terminator, VLocal, Value,
 };
 use luau_hir::{
-    BinOp, HirExpr, HirFunction, HirLiteral, HirProgram, Symbol, SymbolId, SymbolKind,
+    BinOp, HirExpr, HirFunction, HirLiteral, HirProgram, Symbol, SymbolId, SymbolKind, UpvalueSource,
 };
 
 pub(crate) struct FnBuilder<'a> {
@@ -227,12 +227,21 @@ impl<'a> FnBuilder<'a> {
             }
             HirExpr::Function(f) => {
                 let fid = self.queue_function(f);
+                // Translate the HIR upvalue sources into MIR sources by mapping
+                // ParentLocal(SymbolId) → MirUpvalSource::Local(VLocal in current fn).
+                let upvalues: Vec<crate::MirUpvalSource> = f.upvalues.iter().map(|src| match src {
+                    UpvalueSource::ParentLocal(sym) => crate::MirUpvalSource::Local(self.local_for(*sym)),
+                    UpvalueSource::ParentUpval(idx) => crate::MirUpvalSource::ParentUpval(*idx),
+                }).collect();
                 let dst = self.fresh_local();
-                self.emit(Instr::MakeClosure { dst, function: fid });
+                self.emit(Instr::MakeClosure { dst, function: fid, upvalues });
                 Ok(dst)
             }
-            // TODO(Task 4): implement upvalue handling.
-            _ => Err(MirError::Unsupported("upvalue handling deferred to Task 4".into())),
+            HirExpr::Upvalue(idx) => {
+                let dst = self.fresh_local();
+                self.emit(Instr::GetUpval { dst, idx: *idx });
+                Ok(dst)
+            }
         }
     }
 
@@ -337,6 +346,7 @@ pub fn lower(hir: &HirProgram) -> Result<MirProgram, MirError> {
             blocks: builder.blocks,
             consts: builder.consts,
             n_locals: builder.next_local,
+            upvalues: fhir.upvalues.clone(),
         });
     }
     program_functions.sort_by_key(|f| f.id.0);
@@ -482,6 +492,37 @@ mod tests {
         // Dynamic step (variable) compiles; correctness at runtime is the user's problem.
         let p = mir_of("local s = 1 for i = 1, 10, s do x = i end");
         assert!(!p.main().blocks.is_empty());
+    }
+
+    #[test]
+    fn closure_capture_emits_get_upval() {
+        let p = mir_of("local x = 1 local f = function() return x end");
+        let inner = &p.functions[1];
+        let has_get_upval = inner.blocks.iter()
+            .flat_map(|b| b.instrs.iter())
+            .any(|i| matches!(i, Instr::GetUpval { .. }));
+        assert!(has_get_upval);
+        assert_eq!(inner.upvalues.len(), 1);
+    }
+
+    #[test]
+    fn closure_creation_emits_make_closure_with_upvalues() {
+        let p = mir_of("local x = 1 local f = function() return x end");
+        let main = p.main();
+        let mc = main.blocks.iter().flat_map(|b| b.instrs.iter()).find_map(|i| {
+            if let Instr::MakeClosure { upvalues, .. } = i { Some(upvalues) } else { None }
+        }).expect("found MakeClosure");
+        assert_eq!(mc.len(), 1);
+    }
+
+    #[test]
+    fn upvalue_write_emits_set_upval() {
+        let p = mir_of("local x = 1 local f = function() x = 2 end");
+        let inner = &p.functions[1];
+        let has_set_upval = inner.blocks.iter()
+            .flat_map(|b| b.instrs.iter())
+            .any(|i| matches!(i, Instr::SetUpval { .. }));
+        assert!(has_set_upval);
     }
 
     #[test]

@@ -5,6 +5,18 @@
 
 use luau_hir::{BinOp, SymbolId, UnOp};
 
+pub use luau_hir::UpvalueSource;
+
+/// MIR-level upvalue source: like HIR's UpvalueSource, but using VLocal IDs
+/// (which the LIR layer can then translate to register numbers via regalloc).
+#[derive(Debug, Clone, Copy)]
+pub enum MirUpvalSource {
+    /// Capture the current function's VLocal.
+    Local(VLocal),
+    /// Re-capture the current function's upvalue at this index.
+    ParentUpval(u32),
+}
+
 /// A virtual local — an SSA-ish symbolic slot. Register allocation happens in LIR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VLocal(pub u32);
@@ -40,28 +52,22 @@ pub enum Value {
 // nice
 #[derive(Debug, Clone)]
 pub enum Instr {
-    /// Load a constant into a VLocal.
     LoadConst { dst: VLocal, src: ConstId },
-    /// Copy one VLocal to another.
     Move { dst: VLocal, src: VLocal },
-    /// Binary op on two values (non-short-circuit only; and/or are lowered to CFG).
     BinOp { dst: VLocal, op: BinOp, lhs: Value, rhs: Value },
-    /// Unary op.
     UnOp { dst: VLocal, op: UnOp, operand: Value },
-    /// Read a global by name. The name is a string constant in the pool.
     GetGlobal { dst: VLocal, name: ConstId },
-    /// Write to a global.
     SetGlobal { name: ConstId, value: Value },
-    /// Call a function: `dst = callee(args...)`. Plan 1/2 always take 1 result.
-    /// If `dst` is None the result is discarded (statement-position call).
     Call { dst: Option<VLocal>, callee: Value, args: Vec<Value> },
-    /// Create a closure from a function id, write to dst. Plan 2: no upvalues.
-    MakeClosure { dst: VLocal, function: FunctionId },
-    /// Allocate a fresh empty table.
+    /// Create a closure. `upvalues` lists how each of the new closure's upvalues
+    /// is sourced from the CURRENT function's frame (locals or own upvalues).
+    MakeClosure { dst: VLocal, function: FunctionId, upvalues: Vec<MirUpvalSource> },
+    /// Read this function's upvalue at the given index into dst.
+    GetUpval { dst: VLocal, idx: u32 },
+    /// Write to this function's upvalue at the given index.
+    SetUpval { idx: u32, value: Value },
     NewTable { dst: VLocal },
-    /// `dst = obj[key]`.
     GetIndex { dst: VLocal, obj: Value, key: Value },
-    /// `obj[key] = value` — no destination.
     SetIndex { obj: Value, key: Value, value: Value },
 }
 
@@ -87,14 +93,12 @@ pub struct BasicBlock {
 #[derive(Debug, Clone)]
 pub struct MirFunction {
     pub id: FunctionId,
-    /// Parameter VLocals, in order.
     pub params: Vec<VLocal>,
-    /// All blocks in this function; `blocks[0]` is always the entry.
     pub blocks: Vec<BasicBlock>,
-    /// Constant pool for this function.
     pub consts: Vec<Constant>,
-    /// Total number of VLocals (used for LIR's regalloc).
     pub n_locals: u32,
+    /// Upvalue sources for this function. Index = upvalue id used by GetUpval/SetUpval.
+    pub upvalues: Vec<UpvalueSource>,
 }
 
 impl MirFunction {

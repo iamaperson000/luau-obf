@@ -4,7 +4,7 @@
 use crate::{
     lower::FnBuilder, Constant, Instr, MirError, Terminator, Value,
 };
-use luau_hir::{HirExpr, HirStmt};
+use luau_hir::{HirExpr, HirStmt, UpvalueSource};
 
 pub(crate) fn lower(b: &mut FnBuilder, stmts: &[HirStmt]) -> Result<(), MirError> {
     for stmt in stmts {
@@ -180,8 +180,12 @@ fn lower_stmt(b: &mut FnBuilder, stmt: &HirStmt) -> Result<(), MirError> {
         }
         HirStmt::FunctionDecl { name, function } => {
             let fid = b.queue_function(function);
+            let upvalues: Vec<crate::MirUpvalSource> = function.upvalues.iter().map(|src| match src {
+                UpvalueSource::ParentLocal(sym) => crate::MirUpvalSource::Local(b.local_for(*sym)),
+                UpvalueSource::ParentUpval(idx) => crate::MirUpvalSource::ParentUpval(*idx),
+            }).collect();
             let closure_dst = b.fresh_local();
-            b.emit(Instr::MakeClosure { dst: closure_dst, function: fid });
+            b.emit(Instr::MakeClosure { dst: closure_dst, function: fid, upvalues });
             if b.is_global(*name) {
                 let name_str = b.name_of(*name);
                 let name_const = b.intern_const(Constant::String(name_str));
@@ -213,8 +217,11 @@ fn lower_stmt(b: &mut FnBuilder, stmt: &HirStmt) -> Result<(), MirError> {
             });
             Ok(())
         }
-        // TODO(Task 4): implement upvalue handling.
-        _ => Err(MirError::Unsupported("upvalue handling deferred to Task 4".into())),
+        HirStmt::UpvalueAssign { upvalue, value } => {
+            let v = b.lower_expr(value)?;
+            b.emit(Instr::SetUpval { idx: *upvalue, value: Value::VLocal(v) });
+            Ok(())
+        }
     }
 }
 
