@@ -1,0 +1,10 @@
+[package]
+name = "luau-mir"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+luau-hir = { path = "../luau-hir" }
+thiserror = { workspace = true }
