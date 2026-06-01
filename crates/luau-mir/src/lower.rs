@@ -186,10 +186,92 @@ impl<'a> FnBuilder<'a> {
                 });
                 Ok(dst)
             }
-            other => Err(MirError::Unsupported(format!(
-                "HIR expression not yet lowered to MIR: {other:?}"
-            ))),
+            HirExpr::Table(entries) => self.lower_table(entries),
+            HirExpr::Index { obj, key } => {
+                let obj_v = self.lower_expr(obj)?;
+                let key_v = self.lower_expr(key)?;
+                let dst = self.fresh_local();
+                self.emit(Instr::GetIndex {
+                    dst,
+                    obj: Value::VLocal(obj_v),
+                    key: Value::VLocal(key_v),
+                });
+                Ok(dst)
+            }
+            HirExpr::MethodCall { obj, method, args } => {
+                let obj_v = self.lower_expr(obj)?;
+                let key_const = self.intern_const(Constant::String(method.clone()));
+                let key_v = self.fresh_local();
+                self.emit(Instr::LoadConst { dst: key_v, src: key_const });
+                let fn_v = self.fresh_local();
+                self.emit(Instr::GetIndex {
+                    dst: fn_v,
+                    obj: Value::VLocal(obj_v),
+                    key: Value::VLocal(key_v),
+                });
+                let mut arg_vs = Vec::with_capacity(args.len() + 1);
+                arg_vs.push(Value::VLocal(obj_v));
+                for a in args {
+                    arg_vs.push(Value::VLocal(self.lower_expr(a)?));
+                }
+                let dst = self.fresh_local();
+                self.emit(Instr::Call {
+                    dst: Some(dst),
+                    callee: Value::VLocal(fn_v),
+                    args: arg_vs,
+                });
+                Ok(dst)
+            }
+            HirExpr::Function(f) => {
+                let fid = self.queue_function(f);
+                let dst = self.fresh_local();
+                self.emit(Instr::MakeClosure { dst, function: fid });
+                Ok(dst)
+            }
         }
+    }
+
+    fn lower_table(&mut self, entries: &[luau_hir::TableEntry]) -> Result<VLocal, MirError> {
+        let dst = self.fresh_local();
+        self.emit(Instr::NewTable { dst });
+        let mut array_idx: i64 = 1;
+        for entry in entries {
+            match entry {
+                luau_hir::TableEntry::Array(e) => {
+                    let v = self.lower_expr(e)?;
+                    let key_const = self.intern_const(Constant::Number(array_idx as f64));
+                    let key_v = self.fresh_local();
+                    self.emit(Instr::LoadConst { dst: key_v, src: key_const });
+                    self.emit(Instr::SetIndex {
+                        obj: Value::VLocal(dst),
+                        key: Value::VLocal(key_v),
+                        value: Value::VLocal(v),
+                    });
+                    array_idx += 1;
+                }
+                luau_hir::TableEntry::Field(name, e) => {
+                    let v = self.lower_expr(e)?;
+                    let key_const = self.intern_const(Constant::String(name.clone()));
+                    let key_v = self.fresh_local();
+                    self.emit(Instr::LoadConst { dst: key_v, src: key_const });
+                    self.emit(Instr::SetIndex {
+                        obj: Value::VLocal(dst),
+                        key: Value::VLocal(key_v),
+                        value: Value::VLocal(v),
+                    });
+                }
+                luau_hir::TableEntry::Keyed(k, v) => {
+                    let key_v = self.lower_expr(k)?;
+                    let val_v = self.lower_expr(v)?;
+                    self.emit(Instr::SetIndex {
+                        obj: Value::VLocal(dst),
+                        key: Value::VLocal(key_v),
+                        value: Value::VLocal(val_v),
+                    });
+                }
+            }
+        }
+        Ok(dst)
     }
 
     fn lower_short_circuit(
@@ -312,5 +394,51 @@ mod tests {
         let p = mir_of("function f() return 1 end");
         let f = &p.functions[1];
         assert!(f.blocks.len() >= 2, "expected dead-block sentinel after return");
+    }
+
+    #[test]
+    fn lowers_empty_table_to_new_table() {
+        let p = mir_of("local t = {}");
+        let has_new_table = p
+            .main()
+            .blocks
+            .iter()
+            .flat_map(|b| b.instrs.iter())
+            .any(|i| matches!(i, Instr::NewTable { .. }));
+        assert!(has_new_table);
+    }
+
+    #[test]
+    fn lowers_table_field_to_set_index() {
+        let p = mir_of("local t = {x = 1}");
+        let has_set_index = p
+            .main()
+            .blocks
+            .iter()
+            .flat_map(|b| b.instrs.iter())
+            .any(|i| matches!(i, Instr::SetIndex { .. }));
+        assert!(has_set_index);
+    }
+
+    #[test]
+    fn lowers_index_read_to_get_index() {
+        let p = mir_of("local t = {} local x = t[1]");
+        let has_get_index = p
+            .main()
+            .blocks
+            .iter()
+            .flat_map(|b| b.instrs.iter())
+            .any(|i| matches!(i, Instr::GetIndex { .. }));
+        assert!(has_get_index);
+    }
+
+    #[test]
+    fn lowers_method_call_to_get_index_plus_call() {
+        let p = mir_of("local t = {} t:f()");
+        let instrs: Vec<&Instr> =
+            p.main().blocks.iter().flat_map(|b| b.instrs.iter()).collect();
+        let has_get_index = instrs.iter().any(|i| matches!(i, Instr::GetIndex { .. }));
+        let has_call = instrs.iter().any(|i| matches!(i, Instr::Call { .. }));
+        assert!(has_get_index && has_call);
     }
 }
