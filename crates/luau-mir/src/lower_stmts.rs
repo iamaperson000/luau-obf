@@ -131,6 +131,8 @@ fn lower_stmt(b: &mut FnBuilder, stmt: &HirStmt) -> Result<(), MirError> {
             b.set_terminator(Terminator::Goto(header));
             b.switch_to(header);
             let cmp_dst = b.fresh_local();
+            // Plan 2: positive step only (default 1). Negative-step `for` loops
+            // require a runtime sign check on `step` — deferred to a later plan.
             b.emit(Instr::BinOp {
                 dst: cmp_dst,
                 op: luau_hir::BinOp::Le,
