@@ -52,11 +52,17 @@ pub enum Instr {
     GetGlobal { dst: VLocal, name: ConstId },
     /// Write to a global.
     SetGlobal { name: ConstId, value: Value },
-    /// Call a function: `dst = callee(args...)`. Plan 1 always takes 1 result.
+    /// Call a function: `dst = callee(args...)`. Plan 1/2 always take 1 result.
     /// If `dst` is None the result is discarded (statement-position call).
     Call { dst: Option<VLocal>, callee: Value, args: Vec<Value> },
-    /// Create a closure from a function id, write to dst. Plan 1: no upvalues.
+    /// Create a closure from a function id, write to dst. Plan 2: no upvalues.
     MakeClosure { dst: VLocal, function: FunctionId },
+    /// Allocate a fresh empty table.
+    NewTable { dst: VLocal },
+    /// `dst = obj[key]`.
+    GetIndex { dst: VLocal, obj: Value, key: Value },
+    /// `obj[key] = value` — no destination.
+    SetIndex { obj: Value, key: Value, value: Value },
 }
 
 /// Block terminator — exactly one per block.

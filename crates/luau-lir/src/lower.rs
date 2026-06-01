@@ -182,6 +182,8 @@ fn lower_instr(instr: &MInstr, rm: &RegMap, scratch_base: u16, out: &mut Vec<Lir
                 ],
             });
         }
+        // Task 11 will fill in proper lowering for table instructions.
+        MInstr::NewTable { .. } | MInstr::GetIndex { .. } | MInstr::SetIndex { .. } => {}
     }
 }
 
