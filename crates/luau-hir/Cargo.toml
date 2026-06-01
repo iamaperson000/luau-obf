@@ -6,5 +6,6 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+full_moon = { workspace = true }
 luau-parse = { path = "../luau-parse" }
 thiserror = { workspace = true }
