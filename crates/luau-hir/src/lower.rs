@@ -1,4 +1,5 @@
-//! AST → HIR lowering. Plan 1 supports the subset documented in the plan.
+//! AST → HIR lowering. The supported Luau subset grows with each plan; see the
+//! plan documents under `docs/superpowers/plans/` for what's currently in.
 
 use crate::{
     BinOp, HirError, HirExpr, HirFunction, HirLiteral, HirProgram, HirStmt, Symbol, SymbolId,
@@ -167,7 +168,7 @@ fn lower_stmt(
             let exprs: Vec<&full_moon::ast::Expression> = la.expressions().iter().collect();
             if names.len() != 1 && !exprs.is_empty() && exprs.len() != names.len() {
                 return Err(HirError::Unsupported(
-                    "multi-decl with mismatched rhs (Plan 1 has no multi-return)".into(),
+                    "multi-decl with mismatched rhs (multi-return is Plan 4)".into(),
                 ));
             }
             let mut out = Vec::with_capacity(names.len());
@@ -187,7 +188,7 @@ fn lower_stmt(
             let exprs: Vec<&full_moon::ast::Expression> = a.expressions().iter().collect();
             if vars.len() != exprs.len() {
                 return Err(HirError::Unsupported(
-                    "multi-assign with mismatched rhs (Plan 1 has no multi-return)".into(),
+                    "multi-assign with mismatched rhs (multi-return is Plan 4)".into(),
                 ));
             }
             let mut out = Vec::with_capacity(vars.len());
@@ -283,7 +284,7 @@ fn lower_last_stmt(
                 0 => Ok(HirStmt::Return(None)),
                 1 => Ok(HirStmt::Return(Some(lower_expr(lowerer, exprs[0])?))),
                 _ => Err(HirError::Unsupported(
-                    "multi-return (Plan 1 has 0 or 1 return value)".into(),
+                    "multi-return (Plan 4)".into(),
                 )),
             }
         }

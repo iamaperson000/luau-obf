@@ -87,7 +87,8 @@ pub enum HirExpr {
     /// `obj:method(args)` — kept distinct from Call so MIR doesn't double-eval `obj`.
     MethodCall { obj: Box<HirExpr>, method: String, args: Vec<HirExpr> },
     /// `function(params) body end` — anonymous function expression.
-    /// Plan 2: cannot capture parent locals (references become globals).
+    /// The associated `HirFunction.upvalues` list records any locals captured
+    /// from enclosing function frames.
     Function(HirFunction),
     /// Read this function's upvalue at the given index.
     Upvalue(u32),
