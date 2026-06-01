@@ -2,24 +2,48 @@
 
 use crate::{
     BinOp, HirError, HirExpr, HirFunction, HirLiteral, HirProgram, HirStmt, Symbol, SymbolId,
-    SymbolKind, TableEntry, UnOp,
+    SymbolKind, TableEntry, UnOp, UpvalueSource,
 };
 use luau_parse::Ast;
 use std::collections::HashMap;
 
 /// Lowerer state — manages scopes and the symbol table.
 struct Lowerer {
-    /// All declared symbols. Indexed by SymbolId.0 - 1 (ids start at 1).
     symbols: Vec<Symbol>,
     /// Stack of lexical scopes. Each scope maps source name → SymbolId for locals.
-    /// Globals are NOT in any scope; they're resolved by absence.
     scopes: Vec<HashMap<String, SymbolId>>,
-    /// Parallel to `scopes`: scope_function_depth[i] is the function-nesting depth
-    /// of scopes[i]. The top-level chunk is depth 0; each nested function pushes
-    /// a fresh depth one higher.
+    /// Parallel to `scopes`: function-nesting depth of each scope.
     scope_function_depth: Vec<u32>,
     /// The function-nesting depth currently being lowered.
     current_function_depth: u32,
+    /// Stack of function frames, deepest last.
+    /// `function_frames.len() == current_function_depth + 1`.
+    function_frames: Vec<FunctionFrame>,
+}
+
+#[derive(Default)]
+struct FunctionFrame {
+    /// Upvalues defined by THIS function, in declaration order.
+    upvalues: Vec<UpvalueSource>,
+    /// Deduplicating lookup. See `SourceKey` for the discriminator.
+    by_source: HashMap<SourceKey, u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum SourceKey {
+    /// The original Local SymbolId in some ancestor frame.
+    Local(SymbolId),
+    /// The parent frame's specific upvalue slot, keyed by (parent_function_depth, parent_upval_idx).
+    Upval(u32, u32),
+}
+
+/// Resolution outcome — either a direct symbol reference or an upvalue read.
+#[derive(Debug, Clone, Copy)]
+enum Resolved {
+    /// A local of the current function frame, OR a global SymbolId.
+    Symbol(SymbolId),
+    /// An upvalue of the current function frame, at this index.
+    Upvalue(u32),
 }
 
 impl Lowerer {
@@ -29,6 +53,7 @@ impl Lowerer {
             scopes: vec![HashMap::new()],
             scope_function_depth: vec![0],
             current_function_depth: 0,
+            function_frames: vec![FunctionFrame::default()],
         }
     }
 
@@ -45,11 +70,13 @@ impl Lowerer {
     fn enter_function(&mut self) {
         self.current_function_depth += 1;
         self.push_scope();
+        self.function_frames.push(FunctionFrame::default());
     }
 
-    fn exit_function(&mut self) {
+    fn exit_function(&mut self) -> FunctionFrame {
         self.pop_scope();
         self.current_function_depth -= 1;
+        self.function_frames.pop().expect("function_frames balanced")
     }
 
     fn declare_local(&mut self, name: &str) -> SymbolId {
@@ -65,24 +92,47 @@ impl Lowerer {
         id
     }
 
-    /// Resolve a source name to a SymbolId. Searches local scopes from innermost
-    /// out; returns the matching local if it's in the current function frame.
-    /// If a local with a shallower function-frame is found, returns an error
-    /// (upvalue capture is deferred to Plan 3). If no local matches, treats
-    /// the name as a global reference.
-    fn resolve(&mut self, name: &str) -> Result<SymbolId, HirError> {
-        for (i, scope) in self.scopes.iter().enumerate().rev() {
-            if let Some(&id) = scope.get(name) {
-                if self.scope_function_depth[i] == self.current_function_depth {
-                    return Ok(id);
+    fn resolve(&mut self, name: &str) -> Resolved {
+        for i in (0..self.scopes.len()).rev() {
+            if let Some(&id) = self.scopes[i].get(name) {
+                let scope_depth = self.scope_function_depth[i];
+                if scope_depth == self.current_function_depth {
+                    return Resolved::Symbol(id);
                 }
-                return Err(HirError::Unsupported(format!(
-                    "function body captures parent local `{}` (upvalues deferred to Plan 3)",
-                    name
-                )));
+                let idx = self.thread_upvalue(scope_depth, id);
+                return Resolved::Upvalue(idx);
             }
         }
-        Ok(self.declare_global(name))
+        Resolved::Symbol(self.declare_global(name))
+    }
+
+    /// Ensure each function frame between `source_depth+1` and `current_function_depth`
+    /// has an upvalue capturing the local. Returns the upvalue index in the
+    /// CURRENT (deepest) frame.
+    fn thread_upvalue(&mut self, source_depth: u32, source_local: SymbolId) -> u32 {
+        let mut last_idx: Option<u32> = None;
+        for depth in (source_depth + 1)..=self.current_function_depth {
+            let frame_idx = depth as usize;
+            let key = match last_idx {
+                None => SourceKey::Local(source_local),
+                Some(parent_idx) => SourceKey::Upval(depth - 1, parent_idx),
+            };
+            let frame = &mut self.function_frames[frame_idx];
+            let idx = if let Some(&existing) = frame.by_source.get(&key) {
+                existing
+            } else {
+                let new_idx = frame.upvalues.len() as u32;
+                let source = match last_idx {
+                    None => UpvalueSource::ParentLocal(source_local),
+                    Some(parent_idx) => UpvalueSource::ParentUpval(parent_idx),
+                };
+                frame.upvalues.push(source);
+                frame.by_source.insert(key, new_idx);
+                new_idx
+            };
+            last_idx = Some(idx);
+        }
+        last_idx.expect("at least one frame above source")
     }
 }
 
@@ -309,6 +359,13 @@ fn lower_expr(
     }
 }
 
+fn resolved_to_expr(r: Resolved) -> HirExpr {
+    match r {
+        Resolved::Symbol(s) => HirExpr::Symbol(s),
+        Resolved::Upvalue(idx) => HirExpr::Upvalue(idx),
+    }
+}
+
 fn lower_var(
     lowerer: &mut Lowerer,
     var: &full_moon::ast::Var,
@@ -317,7 +374,7 @@ fn lower_var(
     match var {
         Var::Name(token) => {
             let name = token.token().to_string();
-            Ok(HirExpr::Symbol(lowerer.resolve(&name)?))
+            Ok(resolved_to_expr(lowerer.resolve(&name)))
         }
         Var::Expression(ve) => lower_var_expression(lowerer, ve),
         other => Err(HirError::Unsupported(format!("var form {other:?}"))),
@@ -330,7 +387,7 @@ fn lower_var_expression(
 ) -> Result<HirExpr, HirError> {
     use full_moon::ast::Prefix;
     let mut current = match ve.prefix() {
-        Prefix::Name(t) => HirExpr::Symbol(lowerer.resolve(&t.token().to_string())?),
+        Prefix::Name(t) => resolved_to_expr(lowerer.resolve(&t.token().to_string())),
         Prefix::Expression(e) => lower_expr(lowerer, e)?,
         other => return Err(HirError::Unsupported(format!("var prefix {other:?}"))),
     };
@@ -346,7 +403,7 @@ fn lower_call(
 ) -> Result<HirExpr, HirError> {
     use full_moon::ast::Prefix;
     let mut current = match call.prefix() {
-        Prefix::Name(t) => HirExpr::Symbol(lowerer.resolve(&t.token().to_string())?),
+        Prefix::Name(t) => resolved_to_expr(lowerer.resolve(&t.token().to_string())),
         Prefix::Expression(e) => lower_expr(lowerer, e)?,
         other => return Err(HirError::Unsupported(format!("call prefix {other:?}"))),
     };
@@ -488,10 +545,10 @@ fn lower_assign_target(
 ) -> Result<HirStmt, HirError> {
     use full_moon::ast::{Index, Prefix, Suffix, Var};
     match var {
-        Var::Name(t) => {
-            let target = lowerer.resolve(&t.token().to_string())?;
-            Ok(HirStmt::Assign { target, value })
-        }
+        Var::Name(t) => match lowerer.resolve(&t.token().to_string()) {
+            Resolved::Symbol(target) => Ok(HirStmt::Assign { target, value }),
+            Resolved::Upvalue(idx) => Ok(HirStmt::UpvalueAssign { upvalue: idx, value }),
+        },
         Var::Expression(ve) => {
             let suffixes: Vec<&Suffix> = ve.suffixes().collect();
             if suffixes.is_empty() {
@@ -499,7 +556,7 @@ fn lower_assign_target(
             }
             let (last, rest) = suffixes.split_last().unwrap();
             let mut obj = match ve.prefix() {
-                Prefix::Name(t) => HirExpr::Symbol(lowerer.resolve(&t.token().to_string())?),
+                Prefix::Name(t) => resolved_to_expr(lowerer.resolve(&t.token().to_string())),
                 Prefix::Expression(e) => lower_expr(lowerer, e)?,
                 other => return Err(HirError::Unsupported(format!("assign prefix {other:?}"))),
             };
@@ -560,22 +617,27 @@ fn lower_function_decl(
 
     let function = lower_function_body_with_self(lowerer, fd.body(), method_name.is_some())?;
 
-    // Simple top-level decl: single name, no method colon.
+    // Simple decl: single name, no method colon.
     if names.len() == 1 && method_name.is_none() {
-        let symbol = lowerer.resolve(&names[0])?;
-        return Ok(vec![HirStmt::FunctionDecl { name: symbol, function }]);
+        match lowerer.resolve(&names[0]) {
+            Resolved::Symbol(symbol) => {
+                return Ok(vec![HirStmt::FunctionDecl { name: symbol, function }]);
+            }
+            Resolved::Upvalue(idx) => {
+                return Ok(vec![HirStmt::UpvalueAssign {
+                    upvalue: idx,
+                    value: HirExpr::Function(function),
+                }]);
+            }
+        }
     }
 
-    // Dotted / method form. Walk the head as a Symbol, intermediate names as
-    // Index reads, then emit IndexAssign(obj, key, function-as-value).
-    let head_sym = lowerer.resolve(&names[0])?;
-    let mut obj = HirExpr::Symbol(head_sym);
+    // Dotted / method form.
+    let mut obj = resolved_to_expr(lowerer.resolve(&names[0]));
 
     let (intermediate_end, key) = if let Some(m) = method_name {
-        // All of names[1..] are intermediate index reads; method name is the final key.
         (names.len(), m)
     } else {
-        // names[1..len-1] are intermediate; names[len-1] is the final key.
         (names.len() - 1, names[names.len() - 1].clone())
     };
 
@@ -612,7 +674,7 @@ fn lower_function_body_with_self(
             }
             Parameter::Ellipsis(_) => {
                 lowerer.exit_function();
-                return Err(HirError::Unsupported("varargs `...` (Plan 3)".into()));
+                return Err(HirError::Unsupported("varargs `...` (Plan 4)".into()));
             }
             other => {
                 lowerer.exit_function();
@@ -621,8 +683,8 @@ fn lower_function_body_with_self(
         }
     }
     let body = lower_block(lowerer, body.block())?;
-    lowerer.exit_function();
-    Ok(HirFunction { params, body, upvalues: Vec::new() })
+    let frame = lowerer.exit_function();
+    Ok(HirFunction { params, body, upvalues: frame.upvalues })
 }
 
 #[cfg(test)]
@@ -946,22 +1008,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_anonymous_closure_capturing_local() {
-        let ast = luau_parse::parse("local x = 1 local f = function() return x end").unwrap();
-        let err = lower(&ast).unwrap_err();
-        let msg = format!("{err}");
-        assert!(msg.contains("captures parent local"), "got: {msg}");
-    }
-
-    #[test]
-    fn rejects_method_decl_capturing_outer_local() {
-        let ast = luau_parse::parse("local x = 1 local t = {} function t:m() return x end").unwrap();
-        let err = lower(&ast).unwrap_err();
-        let msg = format!("{err}");
-        assert!(msg.contains("captures parent local"), "got: {msg}");
-    }
-
-    #[test]
     fn top_level_function_can_reference_global() {
         // Top-level `function f() print("hi") end` references `print` as a global —
         // that still works because globals are NOT looked up via the local-scope path.
@@ -980,5 +1026,51 @@ mod tests {
     fn nested_function_can_access_globals() {
         let p = lower_str("local f = function() return print(\"hi\") end");
         assert_eq!(p.main.len(), 1);
+    }
+
+    #[test]
+    fn anonymous_closure_captures_local_as_upvalue() {
+        let p = lower_str("local x = 1 local f = function() return x end");
+        let func = p.main.iter().find_map(|s| {
+            if let HirStmt::LocalDecl { value: HirExpr::Function(f), .. } = s {
+                Some(f)
+            } else { None }
+        }).expect("found anon fn");
+        assert_eq!(func.upvalues.len(), 1);
+        assert!(matches!(func.upvalues[0], UpvalueSource::ParentLocal(_)));
+    }
+
+    #[test]
+    fn deeply_nested_closure_threads_upvalue() {
+        let p = lower_str("local x = 1 local b = function() local c = function() return x end return c end");
+        let b = p.main.iter().find_map(|s| {
+            if let HirStmt::LocalDecl { value: HirExpr::Function(f), .. } = s { Some(f) } else { None }
+        }).expect("b");
+        assert_eq!(b.upvalues.len(), 1);
+        assert!(matches!(b.upvalues[0], UpvalueSource::ParentLocal(_)));
+        let c = b.body.iter().find_map(|s| {
+            if let HirStmt::LocalDecl { value: HirExpr::Function(f), .. } = s { Some(f) } else { None }
+        }).expect("c");
+        assert_eq!(c.upvalues.len(), 1);
+        assert!(matches!(c.upvalues[0], UpvalueSource::ParentUpval(0)));
+    }
+
+    #[test]
+    fn upvalue_assignment_lowers_to_upvalue_assign() {
+        let p = lower_str("local x = 1 local f = function() x = 2 end");
+        let f = p.main.iter().find_map(|s| {
+            if let HirStmt::LocalDecl { value: HirExpr::Function(f), .. } = s { Some(f) } else { None }
+        }).expect("f");
+        assert_eq!(f.upvalues.len(), 1);
+        assert!(matches!(&f.body[0], HirStmt::UpvalueAssign { upvalue: 0, .. }));
+    }
+
+    #[test]
+    fn shared_upvalue_dedupes() {
+        let p = lower_str("local x = 1 local f = function() x = x + 1 end");
+        let f = p.main.iter().find_map(|s| {
+            if let HirStmt::LocalDecl { value: HirExpr::Function(f), .. } = s { Some(f) } else { None }
+        }).expect("f");
+        assert_eq!(f.upvalues.len(), 1);
     }
 }
