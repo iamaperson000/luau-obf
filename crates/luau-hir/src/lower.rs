@@ -208,7 +208,7 @@ fn lower_stmt(
         }
         Stmt::FunctionDeclaration(fd) => lower_function_decl(lowerer, fd),
         Stmt::LocalFunction(_) => Err(HirError::Unsupported(
-            "`local function` (closures with upvalues are Plan 2)".into(),
+            "`local function` (closures with upvalues are Plan 3)".into(),
         )),
         other => Err(HirError::Unsupported(format!("statement form {other:?}"))),
     }
@@ -231,7 +231,7 @@ fn lower_last_stmt(
             }
         }
         LastStmt::Break(_) => Ok(HirStmt::Break),
-        LastStmt::Continue(_) => Err(HirError::Unsupported("continue (Plan 2)".into())),
+        LastStmt::Continue(_) => Err(HirError::Unsupported("continue (Plan 4)".into())),
         other => Err(HirError::Unsupported(format!("last stmt form {other:?}"))),
     }
 }

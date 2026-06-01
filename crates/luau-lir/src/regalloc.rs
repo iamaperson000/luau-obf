@@ -1,5 +1,5 @@
 //! Trivially-simple register allocator: assigns each VLocal a unique register.
-//! Plan 2 swaps this for live-range-based allocation that scatters registers.
+//! Plan 3+ will swap this for live-range-based allocation that scatters registers.
 
 use luau_mir::{MirFunction, VLocal};
 use std::collections::HashMap;

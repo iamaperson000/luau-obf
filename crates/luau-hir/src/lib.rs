@@ -12,6 +12,6 @@ use thiserror::Error;
 pub enum HirError {
     #[error("parse error: {0}")]
     Parse(#[from] luau_parse::ParseError),
-    #[error("unsupported construct in Plan 1 subset: {0}")]
+    #[error("unsupported construct: {0}")]
     Unsupported(String),
 }
