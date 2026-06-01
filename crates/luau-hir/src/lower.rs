@@ -322,40 +322,64 @@ fn lower_var(
             let name = token.token().to_string();
             Ok(HirExpr::Symbol(lowerer.resolve(&name)))
         }
-        Var::Expression(_) => Err(HirError::Unsupported(
-            "indexed var (Plan 1 has no tables)".into(),
-        )),
+        Var::Expression(ve) => lower_var_expression(lowerer, ve),
         other => Err(HirError::Unsupported(format!("var form {other:?}"))),
     }
+}
+
+fn lower_var_expression(
+    lowerer: &mut Lowerer,
+    ve: &full_moon::ast::VarExpression,
+) -> Result<HirExpr, HirError> {
+    use full_moon::ast::Prefix;
+    let mut current = match ve.prefix() {
+        Prefix::Name(t) => HirExpr::Symbol(lowerer.resolve(&t.token().to_string())),
+        Prefix::Expression(e) => lower_expr(lowerer, e)?,
+        other => return Err(HirError::Unsupported(format!("var prefix {other:?}"))),
+    };
+    for suffix in ve.suffixes() {
+        current = lower_suffix(lowerer, current, suffix)?;
+    }
+    Ok(current)
 }
 
 fn lower_call(
     lowerer: &mut Lowerer,
     call: &full_moon::ast::FunctionCall,
 ) -> Result<HirExpr, HirError> {
-    use full_moon::ast::{Call, Prefix, Suffix};
-    let prefix = match call.prefix() {
-        Prefix::Name(token) => HirExpr::Symbol(lowerer.resolve(&token.token().to_string())),
-        Prefix::Expression(expr) => lower_expr(lowerer, expr)?,
+    use full_moon::ast::Prefix;
+    let mut current = match call.prefix() {
+        Prefix::Name(t) => HirExpr::Symbol(lowerer.resolve(&t.token().to_string())),
+        Prefix::Expression(e) => lower_expr(lowerer, e)?,
         other => return Err(HirError::Unsupported(format!("call prefix {other:?}"))),
     };
-    let mut current = prefix;
     for suffix in call.suffixes() {
-        match suffix {
-            Suffix::Call(Call::AnonymousCall(args)) => {
-                let args = lower_call_args(lowerer, args)?;
-                current = HirExpr::Call { callee: Box::new(current), args };
-            }
-            Suffix::Call(Call::MethodCall(_)) => {
-                return Err(HirError::Unsupported("method call (a:b())".into()));
-            }
-            Suffix::Index(_) => {
-                return Err(HirError::Unsupported("index suffix (a.b / a[b])".into()));
-            }
-            other => return Err(HirError::Unsupported(format!("call suffix {other:?}"))),
-        }
+        current = lower_suffix(lowerer, current, suffix)?;
     }
     Ok(current)
+}
+
+/// Apply one suffix (call or index) to the expression accumulated so far.
+/// Plan 1 only supports anonymous calls; later tasks add Index and MethodCall.
+fn lower_suffix(
+    lowerer: &mut Lowerer,
+    current: HirExpr,
+    suffix: &full_moon::ast::Suffix,
+) -> Result<HirExpr, HirError> {
+    use full_moon::ast::{Call, Suffix};
+    match suffix {
+        Suffix::Call(Call::AnonymousCall(args)) => {
+            let args = lower_call_args(lowerer, args)?;
+            Ok(HirExpr::Call { callee: Box::new(current), args })
+        }
+        Suffix::Call(Call::MethodCall(_)) => {
+            Err(HirError::Unsupported("method call (lowered in Task 4)".into()))
+        }
+        Suffix::Index(_) => {
+            Err(HirError::Unsupported("index suffix (lowered in Task 2)".into()))
+        }
+        other => Err(HirError::Unsupported(format!("call suffix {other:?}"))),
+    }
 }
 
 fn lower_call_args(
