@@ -61,10 +61,194 @@ pub fn lower(ast: &Ast) -> Result<HirProgram, HirError> {
 }
 
 fn lower_block(
-    _lowerer: &mut Lowerer,
-    _block: &full_moon::ast::Block,
+    lowerer: &mut Lowerer,
+    block: &full_moon::ast::Block,
 ) -> Result<Vec<HirStmt>, HirError> {
-    todo!("implemented in task 5")
+    let mut out = Vec::new();
+    for stmt in block.stmts() {
+        out.extend(lower_stmt(lowerer, stmt)?);
+    }
+    if let Some(last) = block.last_stmt() {
+        out.push(lower_last_stmt(lowerer, last)?);
+    }
+    Ok(out)
+}
+
+fn lower_stmt(
+    lowerer: &mut Lowerer,
+    stmt: &full_moon::ast::Stmt,
+) -> Result<Vec<HirStmt>, HirError> {
+    use full_moon::ast::Stmt;
+    match stmt {
+        Stmt::LocalAssignment(la) => {
+            let names: Vec<&full_moon::tokenizer::TokenReference> = la.names().iter().collect();
+            let exprs: Vec<&full_moon::ast::Expression> = la.expressions().iter().collect();
+            if names.len() != 1 && !exprs.is_empty() && exprs.len() != names.len() {
+                return Err(HirError::Unsupported(
+                    "multi-decl with mismatched rhs (Plan 1 has no multi-return)".into(),
+                ));
+            }
+            let mut out = Vec::with_capacity(names.len());
+            for (i, name_tok) in names.iter().enumerate() {
+                let value = if let Some(expr) = exprs.get(i) {
+                    lower_expr(lowerer, expr)?
+                } else {
+                    HirExpr::Literal(HirLiteral::Nil)
+                };
+                let symbol = lowerer.declare_local(&name_tok.token().to_string());
+                out.push(HirStmt::LocalDecl { symbol, value });
+            }
+            Ok(out)
+        }
+        Stmt::Assignment(a) => {
+            let vars: Vec<&full_moon::ast::Var> = a.variables().iter().collect();
+            let exprs: Vec<&full_moon::ast::Expression> = a.expressions().iter().collect();
+            if vars.len() != exprs.len() {
+                return Err(HirError::Unsupported(
+                    "multi-assign with mismatched rhs (Plan 1 has no multi-return)".into(),
+                ));
+            }
+            let mut out = Vec::with_capacity(vars.len());
+            for (var, expr) in vars.iter().zip(exprs.iter()) {
+                let target = match var {
+                    full_moon::ast::Var::Name(tok) => lowerer.resolve(&tok.token().to_string()),
+                    other => {
+                        return Err(HirError::Unsupported(format!(
+                            "assign target form {other:?}"
+                        )))
+                    }
+                };
+                let value = lower_expr(lowerer, expr)?;
+                out.push(HirStmt::Assign { target, value });
+            }
+            Ok(out)
+        }
+        Stmt::FunctionCall(call) => {
+            let e = lower_call(lowerer, call)?;
+            Ok(vec![HirStmt::ExprStmt(e)])
+        }
+        Stmt::If(if_stmt) => {
+            let cond = lower_expr(lowerer, if_stmt.condition())?;
+            lowerer.push_scope();
+            let then_body = lower_block(lowerer, if_stmt.block())?;
+            lowerer.pop_scope();
+            let mut tail: Vec<HirStmt> = if let Some(else_block) = if_stmt.else_block() {
+                lowerer.push_scope();
+                let b = lower_block(lowerer, else_block)?;
+                lowerer.pop_scope();
+                b
+            } else {
+                Vec::new()
+            };
+            if let Some(elseifs) = if_stmt.else_if() {
+                for ei in elseifs.iter().rev() {
+                    let ei_cond = lower_expr(lowerer, ei.condition())?;
+                    lowerer.push_scope();
+                    let ei_body = lower_block(lowerer, ei.block())?;
+                    lowerer.pop_scope();
+                    tail = vec![HirStmt::If {
+                        cond: ei_cond,
+                        then_body: ei_body,
+                        else_body: tail,
+                    }];
+                }
+            }
+            Ok(vec![HirStmt::If { cond, then_body, else_body: tail }])
+        }
+        Stmt::While(w) => {
+            let cond = lower_expr(lowerer, w.condition())?;
+            lowerer.push_scope();
+            let body = lower_block(lowerer, w.block())?;
+            lowerer.pop_scope();
+            Ok(vec![HirStmt::While { cond, body }])
+        }
+        Stmt::Repeat(r) => {
+            lowerer.push_scope();
+            let body = lower_block(lowerer, r.block())?;
+            let cond = lower_expr(lowerer, r.until())?;
+            lowerer.pop_scope();
+            Ok(vec![HirStmt::Repeat { cond, body }])
+        }
+        Stmt::NumericFor(nf) => {
+            let start = lower_expr(lowerer, nf.start())?;
+            let stop = lower_expr(lowerer, nf.end())?;
+            let step = match nf.step() {
+                Some(e) => lower_expr(lowerer, e)?,
+                None => HirExpr::Literal(HirLiteral::Number(1.0)),
+            };
+            lowerer.push_scope();
+            let var = lowerer.declare_local(&nf.index_variable().token().to_string());
+            let body = lower_block(lowerer, nf.block())?;
+            lowerer.pop_scope();
+            Ok(vec![HirStmt::NumericFor { var, start, stop, step, body }])
+        }
+        Stmt::FunctionDeclaration(fd) => {
+            let name_path: Vec<&full_moon::tokenizer::TokenReference> =
+                fd.name().names().iter().collect();
+            if name_path.len() != 1 || fd.name().method_colon().is_some() {
+                return Err(HirError::Unsupported(
+                    "qualified or method-style function decl (Plan 1: top-level only)".into(),
+                ));
+            }
+            let name = name_path[0].token().to_string();
+            let symbol = lowerer.resolve(&name);
+            let function = lower_function_body(lowerer, fd.body())?;
+            Ok(vec![HirStmt::FunctionDecl { name: symbol, function }])
+        }
+        Stmt::LocalFunction(_) => Err(HirError::Unsupported(
+            "`local function` (closures with upvalues are Plan 2)".into(),
+        )),
+        other => Err(HirError::Unsupported(format!("statement form {other:?}"))),
+    }
+}
+
+fn lower_last_stmt(
+    lowerer: &mut Lowerer,
+    stmt: &full_moon::ast::LastStmt,
+) -> Result<HirStmt, HirError> {
+    use full_moon::ast::LastStmt;
+    match stmt {
+        LastStmt::Return(ret) => {
+            let exprs: Vec<&full_moon::ast::Expression> = ret.returns().iter().collect();
+            match exprs.len() {
+                0 => Ok(HirStmt::Return(None)),
+                1 => Ok(HirStmt::Return(Some(lower_expr(lowerer, exprs[0])?))),
+                _ => Err(HirError::Unsupported(
+                    "multi-return (Plan 1 has 0 or 1 return value)".into(),
+                )),
+            }
+        }
+        LastStmt::Break(_) => Err(HirError::Unsupported("break (Plan 2)".into())),
+        LastStmt::Continue(_) => Err(HirError::Unsupported("continue (Plan 2)".into())),
+        other => Err(HirError::Unsupported(format!("last stmt form {other:?}"))),
+    }
+}
+
+fn lower_function_body(
+    lowerer: &mut Lowerer,
+    body: &full_moon::ast::FunctionBody,
+) -> Result<HirFunction, HirError> {
+    lowerer.push_scope();
+    let mut params = Vec::new();
+    for p in body.parameters() {
+        use full_moon::ast::Parameter;
+        match p {
+            Parameter::Name(tok) => {
+                params.push(lowerer.declare_local(&tok.token().to_string()));
+            }
+            Parameter::Ellipsis(_) => {
+                lowerer.pop_scope();
+                return Err(HirError::Unsupported("varargs `...` (Plan 2)".into()));
+            }
+            other => {
+                lowerer.pop_scope();
+                return Err(HirError::Unsupported(format!("parameter form {other:?}")));
+            }
+        }
+    }
+    let body = lower_block(lowerer, body.block())?;
+    lowerer.pop_scope();
+    Ok(HirFunction { params, body })
 }
 
 fn lower_expr(
@@ -316,5 +500,74 @@ mod tests {
         let HirExpr::Call { callee, args } = e else { panic!() };
         assert!(matches!(*callee, HirExpr::Symbol(_)));
         assert_eq!(args.len(), 1);
+    }
+
+    fn lower_str(src: &str) -> HirProgram {
+        let ast = luau_parse::parse(src).expect("parse");
+        lower(&ast).expect("lower")
+    }
+
+    #[test]
+    fn lowers_local_decl_with_value() {
+        let p = lower_str("local x = 5");
+        assert_eq!(p.main.len(), 1);
+        let HirStmt::LocalDecl { value, .. } = &p.main[0] else { panic!() };
+        assert!(matches!(value, HirExpr::Literal(HirLiteral::Number(n)) if *n == 5.0));
+    }
+
+    #[test]
+    fn lowers_local_decl_no_value() {
+        let p = lower_str("local x");
+        let HirStmt::LocalDecl { value, .. } = &p.main[0] else { panic!() };
+        assert!(matches!(value, HirExpr::Literal(HirLiteral::Nil)));
+    }
+
+    #[test]
+    fn lowers_global_assign() {
+        let p = lower_str("x = 5");
+        assert!(matches!(&p.main[0], HirStmt::Assign { .. }));
+    }
+
+    #[test]
+    fn lowers_if_else() {
+        let p = lower_str("if x then y = 1 else y = 2 end");
+        let HirStmt::If { then_body, else_body, .. } = &p.main[0] else { panic!() };
+        assert_eq!(then_body.len(), 1);
+        assert_eq!(else_body.len(), 1);
+    }
+
+    #[test]
+    fn lowers_if_elseif_else_as_nested() {
+        let p = lower_str("if a then x=1 elseif b then x=2 else x=3 end");
+        let HirStmt::If { else_body, .. } = &p.main[0] else { panic!() };
+        assert_eq!(else_body.len(), 1);
+        assert!(matches!(&else_body[0], HirStmt::If { .. }));
+    }
+
+    #[test]
+    fn lowers_while() {
+        let p = lower_str("while x do y = 1 end");
+        assert!(matches!(&p.main[0], HirStmt::While { .. }));
+    }
+
+    #[test]
+    fn lowers_numeric_for_default_step() {
+        let p = lower_str("for i = 1, 10 do x = i end");
+        let HirStmt::NumericFor { step, .. } = &p.main[0] else { panic!() };
+        assert!(matches!(step, HirExpr::Literal(HirLiteral::Number(n)) if *n == 1.0));
+    }
+
+    #[test]
+    fn lowers_global_function_decl() {
+        let p = lower_str("function f(x) return x end");
+        let HirStmt::FunctionDecl { function, .. } = &p.main[0] else { panic!() };
+        assert_eq!(function.params.len(), 1);
+        assert_eq!(function.body.len(), 1);
+    }
+
+    #[test]
+    fn rejects_local_function() {
+        let ast = luau_parse::parse("local function f() end").unwrap();
+        assert!(lower(&ast).is_err());
     }
 }
