@@ -88,14 +88,15 @@ pub enum HirStmt {
     LocalDecl { symbol: SymbolId, value: HirExpr },
     /// `name = expr` where `name` is a resolved symbol.
     Assign { target: SymbolId, value: HirExpr },
+    /// `obj[key] = value` or `obj.name = value`.
+    IndexAssign { obj: HirExpr, key: HirExpr, value: HirExpr },
     /// `f(args...)` as a statement (return value discarded).
     ExprStmt(HirExpr),
     /// `if cond then then_body [else else_body] end`.
-    /// elseif chains are encoded as nested If in else_body.
     If { cond: HirExpr, then_body: Vec<HirStmt>, else_body: Vec<HirStmt> },
     /// `while cond do body end`
     While { cond: HirExpr, body: Vec<HirStmt> },
-    /// `repeat body until cond` — semantics: run body at least once, then exit if cond truthy.
+    /// `repeat body until cond`.
     Repeat { cond: HirExpr, body: Vec<HirStmt> },
     /// `for var = start, stop[, step] do body end`. `step` defaults to 1.0.
     NumericFor {
@@ -105,10 +106,12 @@ pub enum HirStmt {
         step: HirExpr,
         body: Vec<HirStmt>,
     },
-    /// `return [expr]` — Plan 1 supports zero or one return value.
+    /// `return [expr]` — Plan 1/2 support zero or one return value.
     Return(Option<HirExpr>),
+    /// `break` out of the nearest enclosing loop.
+    Break,
     /// Global function declaration: `function name(args) body end`.
-    /// Lowered from `function f(...) end`, which is sugar for `f = function(...) end`.
+    /// For dotted / method declarations, lowered to IndexAssign in `lower_stmt`.
     FunctionDecl { name: SymbolId, function: HirFunction },
 }
 

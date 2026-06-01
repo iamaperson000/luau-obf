@@ -178,5 +178,11 @@ fn lower_stmt(b: &mut FnBuilder, stmt: &HirStmt) -> Result<(), MirError> {
             }
             Ok(())
         }
+        HirStmt::IndexAssign { .. } => {
+            Err(MirError::Unsupported("IndexAssign (Plan 2 / Task 9)".into()))
+        }
+        HirStmt::Break => {
+            Err(MirError::Unsupported("break (Plan 2 / Task 9)".into()))
+        }
     }
 }

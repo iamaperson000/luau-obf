@@ -110,16 +110,8 @@ fn lower_stmt(
             }
             let mut out = Vec::with_capacity(vars.len());
             for (var, expr) in vars.iter().zip(exprs.iter()) {
-                let target = match var {
-                    full_moon::ast::Var::Name(tok) => lowerer.resolve(&tok.token().to_string()),
-                    other => {
-                        return Err(HirError::Unsupported(format!(
-                            "assign target form {other:?}"
-                        )))
-                    }
-                };
                 let value = lower_expr(lowerer, expr)?;
-                out.push(HirStmt::Assign { target, value });
+                out.push(lower_assign_target(lowerer, var, value)?);
             }
             Ok(out)
         }
@@ -218,7 +210,7 @@ fn lower_last_stmt(
                 )),
             }
         }
-        LastStmt::Break(_) => Err(HirError::Unsupported("break (Plan 2)".into())),
+        LastStmt::Break(_) => Ok(HirStmt::Break),
         LastStmt::Continue(_) => Err(HirError::Unsupported("continue (Plan 2)".into())),
         other => Err(HirError::Unsupported(format!("last stmt form {other:?}"))),
     }
@@ -487,6 +479,48 @@ fn unescape(s: &str) -> String {
         }
     }
     out
+}
+
+fn lower_assign_target(
+    lowerer: &mut Lowerer,
+    var: &full_moon::ast::Var,
+    value: HirExpr,
+) -> Result<HirStmt, HirError> {
+    use full_moon::ast::{Index, Prefix, Suffix, Var};
+    match var {
+        Var::Name(t) => {
+            let target = lowerer.resolve(&t.token().to_string());
+            Ok(HirStmt::Assign { target, value })
+        }
+        Var::Expression(ve) => {
+            let suffixes: Vec<&Suffix> = ve.suffixes().collect();
+            if suffixes.is_empty() {
+                return Err(HirError::Unsupported("empty VarExpression in assign LHS".into()));
+            }
+            let (last, rest) = suffixes.split_last().unwrap();
+            let mut obj = match ve.prefix() {
+                Prefix::Name(t) => HirExpr::Symbol(lowerer.resolve(&t.token().to_string())),
+                Prefix::Expression(e) => lower_expr(lowerer, e)?,
+                other => return Err(HirError::Unsupported(format!("assign prefix {other:?}"))),
+            };
+            for s in rest {
+                obj = lower_suffix(lowerer, obj, s)?;
+            }
+            let key = match last {
+                Suffix::Index(Index::Brackets { expression, .. }) => lower_expr(lowerer, expression)?,
+                Suffix::Index(Index::Dot { name, .. }) => {
+                    HirExpr::Literal(HirLiteral::String(name.token().to_string()))
+                }
+                other => {
+                    return Err(HirError::Unsupported(format!(
+                        "assign LHS last suffix must be index, got {other:?}"
+                    )))
+                }
+            };
+            Ok(HirStmt::IndexAssign { obj, key, value })
+        }
+        other => Err(HirError::Unsupported(format!("assign target form {other:?}"))),
+    }
 }
 
 fn lower_table_ctor(
@@ -770,5 +804,36 @@ mod tests {
         let HirExpr::MethodCall { obj, method, .. } = e else { panic!() };
         assert!(matches!(*obj, HirExpr::Index { .. }));
         assert_eq!(method, "c");
+    }
+
+    #[test]
+    fn lowers_dot_assign() {
+        let p = lower_str("t.x = 5");
+        let HirStmt::IndexAssign { obj, key, value } = &p.main[0] else { panic!() };
+        assert!(matches!(obj, HirExpr::Symbol(_)));
+        assert!(matches!(key, HirExpr::Literal(HirLiteral::String(s)) if s == "x"));
+        assert!(matches!(value, HirExpr::Literal(HirLiteral::Number(n)) if *n == 5.0));
+    }
+
+    #[test]
+    fn lowers_bracket_assign() {
+        let p = lower_str("t[1] = 5");
+        let HirStmt::IndexAssign { key, .. } = &p.main[0] else { panic!() };
+        assert!(matches!(key, HirExpr::Literal(HirLiteral::Number(n)) if *n == 1.0));
+    }
+
+    #[test]
+    fn lowers_chained_assign() {
+        let p = lower_str("a.b.c = 7");
+        let HirStmt::IndexAssign { obj, key, .. } = &p.main[0] else { panic!() };
+        assert!(matches!(obj, HirExpr::Index { .. }));
+        assert!(matches!(key, HirExpr::Literal(HirLiteral::String(s)) if s == "c"));
+    }
+
+    #[test]
+    fn lowers_break_in_while() {
+        let p = lower_str("while x do break end");
+        let HirStmt::While { body, .. } = &p.main[0] else { panic!() };
+        assert!(matches!(&body[0], HirStmt::Break));
     }
 }
