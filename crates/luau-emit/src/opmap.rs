@@ -1,19 +1,19 @@
 //! Maps symbolic OpKinds to integer opcode bytes.
 //!
-//! In Plan 1 the mapping is deterministic and seed-independent. Plan 3 introduces
-//! per-build randomization: keep the API stable so we just swap implementations.
+//! In Plan 2 the mapping is still deterministic and seed-independent.
+//! Plan 3+ introduces per-build randomization: keep the API stable so we
+//! just swap implementations.
 
 use luau_lir::OpKind;
 
 pub struct OpMap {
     /// table[OpKind index] = opcode byte
-    forward: [u8; 26],
+    forward: [u8; 29],
 }
 
 impl OpMap {
-    /// Build a fresh map. `_seed` is the entropy source for Plan 3; ignored here.
     pub fn new(_seed: &[u8; 32]) -> Self {
-        let mut forward = [0u8; 26];
+        let mut forward = [0u8; 29];
         for (i, slot) in forward.iter_mut().enumerate() {
             *slot = (i + 1) as u8;
         }
@@ -25,7 +25,6 @@ impl OpMap {
         self.forward[idx]
     }
 
-    /// All used opcode bytes in their assignment order (for the VM dispatch table).
     pub fn assigned_pairs(&self) -> Vec<(OpKind, u8)> {
         ALL_OPS.iter().map(|k| (*k, self.opcode_of(*k))).collect()
     }
@@ -38,6 +37,7 @@ pub const ALL_OPS: &[OpKind] = &[
     OpKind::Not, OpKind::Neg, OpKind::Len,
     OpKind::GetGlobal, OpKind::SetGlobal, OpKind::Call, OpKind::Return,
     OpKind::Jmp, OpKind::JmpIfTrue, OpKind::JmpIfFalse, OpKind::Closure,
+    OpKind::NewTable, OpKind::GetTable, OpKind::SetTable,
 ];
 
 fn op_index(k: OpKind) -> usize {

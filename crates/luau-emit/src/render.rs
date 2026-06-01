@@ -80,6 +80,9 @@ fn opname(k: OpKind) -> &'static str {
         OpKind::Jmp => "Jmp",
         OpKind::JmpIfTrue => "JmpIfTrue", OpKind::JmpIfFalse => "JmpIfFalse",
         OpKind::Closure => "Closure",
+        OpKind::NewTable => "NewTable",
+        OpKind::GetTable => "GetTable",
+        OpKind::SetTable => "SetTable",
     }
 }
 
