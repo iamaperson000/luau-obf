@@ -257,9 +257,16 @@ fn lower_stmt(
             Ok(vec![HirStmt::NumericFor { var, start, stop, step, body }])
         }
         Stmt::FunctionDeclaration(fd) => lower_function_decl(lowerer, fd),
-        Stmt::LocalFunction(_) => Err(HirError::Unsupported(
-            "`local function` (closures with upvalues are Plan 3)".into(),
-        )),
+        Stmt::LocalFunction(lf) => {
+            // Declare the local BEFORE lowering the body, so the body can recurse.
+            let name = lf.name().token().to_string();
+            let symbol = lowerer.declare_local(&name);
+            let function = lower_function_body(lowerer, lf.body())?;
+            Ok(vec![HirStmt::LocalDecl {
+                symbol,
+                value: HirExpr::Function(function),
+            }])
+        }
         other => Err(HirError::Unsupported(format!("statement form {other:?}"))),
     }
 }
@@ -816,9 +823,32 @@ mod tests {
     }
 
     #[test]
-    fn rejects_local_function() {
-        let ast = luau_parse::parse("local function f() end").unwrap();
-        assert!(lower(&ast).is_err());
+    fn lowers_local_function() {
+        let p = lower_str("local function f(x) return x end");
+        let HirStmt::LocalDecl { value, .. } = &p.main[0] else { panic!() };
+        assert!(matches!(value, HirExpr::Function(_)));
+    }
+
+    #[test]
+    fn local_function_can_recurse() {
+        let p = lower_str("local function f(n) if n <= 0 then return 1 end return n * f(n-1) end");
+        let HirStmt::LocalDecl { value, .. } = &p.main[0] else { panic!() };
+        let HirExpr::Function(func) = value else { panic!() };
+        // f as a global must NOT have been declared (the body's reference to f
+        // should resolve to the surrounding LocalDecl, not a global).
+        let f_globals: Vec<&Symbol> = p.symbols.iter()
+            .filter(|s| s.name == "f" && s.kind == SymbolKind::Global)
+            .collect();
+        assert!(f_globals.is_empty(), "f should be local, not global");
+        // f resolves WITHIN the function body's scope as either:
+        //   - A local in the same frame (same depth as the LocalDecl) — possible if Lua
+        //     treats `local function f` as making f visible inside its own body.
+        //   - An upvalue (if the body opens a new function frame after declaring f).
+        // Since `declare_local` ran before `lower_function_body`, and the body opens
+        // a new frame, the body sees f as an upvalue. So func.upvalues should contain
+        // the local-f symbol.
+        assert_eq!(func.upvalues.len(), 1, "expected f to be captured as an upvalue");
+        assert!(matches!(func.upvalues[0], UpvalueSource::ParentLocal(_)));
     }
 
     #[test]
