@@ -193,6 +193,19 @@ vm_call = function(proto_id, args, nargs)
                 local n = _select("#", ...)
                 return vm_call(pid, pa, n)
             end
+        elseif op == OP_NewTable then
+            local a = read_u16(code, pc); pc = pc + 2
+            regs[a] = {}
+        elseif op == OP_GetTable then
+            local a = read_u16(code, pc); pc = pc + 2
+            local b = read_u16(code, pc); pc = pc + 2
+            local c = read_u16(code, pc); pc = pc + 2
+            regs[a] = regs[b][regs[c]]
+        elseif op == OP_SetTable then
+            local a = read_u16(code, pc); pc = pc + 2
+            local b = read_u16(code, pc); pc = pc + 2
+            local c = read_u16(code, pc); pc = pc + 2
+            regs[a][regs[b]] = regs[c]
         else
             _error("luau-obf: unknown opcode " .. _tostring(op))
         end
