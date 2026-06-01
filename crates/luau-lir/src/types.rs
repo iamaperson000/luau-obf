@@ -35,6 +35,9 @@ pub enum OpKind {
     JmpIfTrue,
     JmpIfFalse,
     Closure,
+    NewTable,
+    GetTable,
+    SetTable,
 }
 
 #[derive(Debug, Clone)]

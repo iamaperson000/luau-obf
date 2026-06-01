@@ -85,8 +85,17 @@ fn visit_vlocals(instr: &luau_mir::Instr, mut f: impl FnMut(VLocal)) {
             for a in args { visit_value(*a, &mut f); }
         }
         Instr::MakeClosure { dst, .. } => f(*dst),
-        // Task 10 will fill in proper register visiting for table instructions.
-        Instr::NewTable { .. } | Instr::GetIndex { .. } | Instr::SetIndex { .. } => {}
+        Instr::NewTable { dst } => f(*dst),
+        Instr::GetIndex { dst, obj, key } => {
+            f(*dst);
+            visit_value(*obj, &mut f);
+            visit_value(*key, &mut f);
+        }
+        Instr::SetIndex { obj, key, value } => {
+            visit_value(*obj, &mut f);
+            visit_value(*key, &mut f);
+            visit_value(*value, &mut f);
+        }
     }
 }
 
