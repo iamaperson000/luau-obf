@@ -8,3 +8,6 @@ license.workspace = true
 [dependencies]
 luau-hir = { path = "../luau-hir" }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+luau-parse = { path = "../luau-parse" }
