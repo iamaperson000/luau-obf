@@ -186,6 +186,9 @@ impl<'a> FnBuilder<'a> {
                 });
                 Ok(dst)
             }
+            other => Err(MirError::Unsupported(format!(
+                "HIR expression not yet lowered to MIR: {other:?}"
+            ))),
         }
     }
 

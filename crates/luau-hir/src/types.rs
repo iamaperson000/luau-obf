@@ -37,6 +37,16 @@ pub enum HirLiteral {
     String(String),
 }
 
+#[derive(Debug, Clone)]
+pub enum TableEntry {
+    /// `value` — positional, integer-keyed at the next slot (1-based).
+    Array(HirExpr),
+    /// `name = value` — string-keyed shorthand.
+    Field(String, HirExpr),
+    /// `[expr] = value`.
+    Keyed(HirExpr, HirExpr),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
     Add, Sub, Mul, Div, Mod, Pow,
@@ -61,6 +71,15 @@ pub enum HirExpr {
     UnOp(UnOp, Box<HirExpr>),
     /// f(args...). Function expression is `callee`; arg list is positional.
     Call { callee: Box<HirExpr>, args: Vec<HirExpr> },
+    /// `{ ... }` table constructor.
+    Table(Vec<TableEntry>),
+    /// `obj[key]` or `obj.name` (the latter has a String-literal key).
+    Index { obj: Box<HirExpr>, key: Box<HirExpr> },
+    /// `obj:method(args)` — kept distinct from Call so MIR doesn't double-eval `obj`.
+    MethodCall { obj: Box<HirExpr>, method: String, args: Vec<HirExpr> },
+    /// `function(params) body end` — anonymous function expression.
+    /// Plan 2: cannot capture parent locals (references become globals).
+    Function(HirFunction),
 }
 
 #[derive(Debug, Clone)]

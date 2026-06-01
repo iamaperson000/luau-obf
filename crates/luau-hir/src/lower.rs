@@ -308,6 +308,10 @@ fn lower_expr(
         E::Var(var) => lower_var(lowerer, var),
         E::FunctionCall(call) => lower_call(lowerer, call),
         E::TypeAssertion { expression, .. } => lower_expr(lowerer, expression),
+        E::TableConstructor(tc) => lower_table_ctor(lowerer, tc),
+        E::Function(_) => Err(HirError::Unsupported(
+            "anonymous function expression (added in Task 3)".into(),
+        )),
         other => Err(HirError::Unsupported(format!("expression form {other:?}"))),
     }
 }
@@ -360,13 +364,12 @@ fn lower_call(
 }
 
 /// Apply one suffix (call or index) to the expression accumulated so far.
-/// Plan 1 only supports anonymous calls; later tasks add Index and MethodCall.
 fn lower_suffix(
     lowerer: &mut Lowerer,
     current: HirExpr,
     suffix: &full_moon::ast::Suffix,
 ) -> Result<HirExpr, HirError> {
-    use full_moon::ast::{Call, Suffix};
+    use full_moon::ast::{Call, Index, Suffix};
     match suffix {
         Suffix::Call(Call::AnonymousCall(args)) => {
             let args = lower_call_args(lowerer, args)?;
@@ -375,10 +378,15 @@ fn lower_suffix(
         Suffix::Call(Call::MethodCall(_)) => {
             Err(HirError::Unsupported("method call (lowered in Task 4)".into()))
         }
-        Suffix::Index(_) => {
-            Err(HirError::Unsupported("index suffix (lowered in Task 2)".into()))
+        Suffix::Index(Index::Brackets { expression, .. }) => {
+            let key = lower_expr(lowerer, expression)?;
+            Ok(HirExpr::Index { obj: Box::new(current), key: Box::new(key) })
         }
-        other => Err(HirError::Unsupported(format!("call suffix {other:?}"))),
+        Suffix::Index(Index::Dot { name, .. }) => {
+            let key = HirExpr::Literal(HirLiteral::String(name.token().to_string()));
+            Ok(HirExpr::Index { obj: Box::new(current), key: Box::new(key) })
+        }
+        other => Err(HirError::Unsupported(format!("suffix form {other:?}"))),
     }
 }
 
@@ -396,8 +404,8 @@ fn lower_call_args(
             let raw = s.token().to_string();
             Ok(vec![HirExpr::Literal(HirLiteral::String(strip_string_quotes(&raw)?))])
         }
-        FunctionArgs::TableConstructor(_) => {
-            Err(HirError::Unsupported("table-as-call-arg (Plan 1 has no tables)".into()))
+        FunctionArgs::TableConstructor(tc) => {
+            Ok(vec![lower_table_ctor(lowerer, tc)?])
         }
         other => Err(HirError::Unsupported(format!("call args {other:?}"))),
     }
@@ -474,9 +482,38 @@ fn unescape(s: &str) -> String {
     out
 }
 
+fn lower_table_ctor(
+    lowerer: &mut Lowerer,
+    tc: &full_moon::ast::TableConstructor,
+) -> Result<HirExpr, HirError> {
+    use full_moon::ast::Field;
+    let mut entries = Vec::new();
+    for field in tc.fields() {
+        match field {
+            Field::ExpressionKey { key, value, .. } => {
+                let k = lower_expr(lowerer, key)?;
+                let v = lower_expr(lowerer, value)?;
+                entries.push(crate::TableEntry::Keyed(k, v));
+            }
+            Field::NameKey { key, value, .. } => {
+                let name = key.token().to_string();
+                let v = lower_expr(lowerer, value)?;
+                entries.push(crate::TableEntry::Field(name, v));
+            }
+            Field::NoKey(value) => {
+                let v = lower_expr(lowerer, value)?;
+                entries.push(crate::TableEntry::Array(v));
+            }
+            other => return Err(HirError::Unsupported(format!("table field {other:?}"))),
+        }
+    }
+    Ok(HirExpr::Table(entries))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TableEntry;
 
     fn lower_one_expr(src: &str) -> HirExpr {
         // Parse `return <src>` to coax full_moon into giving us an expression.
@@ -626,5 +663,71 @@ mod tests {
         let e = lower_one_expr("0xDE_AD");
         let HirExpr::Literal(HirLiteral::Number(n)) = e else { panic!() };
         assert_eq!(n, 0xDEAD as f64);
+    }
+
+    #[test]
+    fn lowers_empty_table() {
+        let e = lower_one_expr("{}");
+        let HirExpr::Table(entries) = e else { panic!() };
+        assert_eq!(entries.len(), 0);
+    }
+
+    #[test]
+    fn lowers_array_table() {
+        let e = lower_one_expr("{1, 2, 3}");
+        let HirExpr::Table(entries) = e else { panic!() };
+        assert_eq!(entries.len(), 3);
+        for entry in &entries {
+            assert!(matches!(entry, TableEntry::Array(_)));
+        }
+    }
+
+    #[test]
+    fn lowers_hash_table() {
+        let e = lower_one_expr("{x = 1, y = 2}");
+        let HirExpr::Table(entries) = e else { panic!() };
+        assert_eq!(entries.len(), 2);
+        assert!(matches!(&entries[0], TableEntry::Field(n, _) if n == "x"));
+        assert!(matches!(&entries[1], TableEntry::Field(n, _) if n == "y"));
+    }
+
+    #[test]
+    fn lowers_computed_key() {
+        let e = lower_one_expr("{[1+2] = 99}");
+        let HirExpr::Table(entries) = e else { panic!() };
+        assert!(matches!(&entries[0], TableEntry::Keyed(_, _)));
+    }
+
+    #[test]
+    fn lowers_dot_index() {
+        let e = lower_one_expr("t.field");
+        let HirExpr::Index { obj, key } = e else { panic!() };
+        assert!(matches!(*obj, HirExpr::Symbol(_)));
+        assert!(matches!(*key, HirExpr::Literal(HirLiteral::String(ref s)) if s == "field"));
+    }
+
+    #[test]
+    fn lowers_bracket_index() {
+        let e = lower_one_expr("t[42]");
+        let HirExpr::Index { obj, key } = e else { panic!() };
+        assert!(matches!(*obj, HirExpr::Symbol(_)));
+        assert!(matches!(*key, HirExpr::Literal(HirLiteral::Number(n)) if n == 42.0));
+    }
+
+    #[test]
+    fn lowers_chained_index() {
+        let e = lower_one_expr("a.b.c");
+        let HirExpr::Index { obj, key } = e else { panic!() };
+        assert!(matches!(*key, HirExpr::Literal(HirLiteral::String(ref s)) if s == "c"));
+        let HirExpr::Index { key: inner_key, .. } = *obj else { panic!() };
+        assert!(matches!(*inner_key, HirExpr::Literal(HirLiteral::String(ref s)) if s == "b"));
+    }
+
+    #[test]
+    fn table_arg_to_call() {
+        let e = lower_one_expr("f{1,2}");
+        let HirExpr::Call { args, .. } = e else { panic!() };
+        assert_eq!(args.len(), 1);
+        assert!(matches!(&args[0], HirExpr::Table(_)));
     }
 }
