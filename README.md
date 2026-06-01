@@ -3,8 +3,10 @@
 Rust-implemented Luau obfuscator. VM-based, loadstring-style protection
 intended for Roblox scripts.
 
-**Status:** Plan 1 — skeleton & identity pipeline. The obfuscator round-trips
-a meaningful Luau subset through a custom VM with no obfuscation passes yet.
+**Status:** Plan 2 — tables, methods, and `break`. The obfuscator round-trips
+an expanded Luau subset (tables, indexed access, method calls, dotted/method
+function declarations, anonymous function expressions, `break`) through a
+custom VM with no obfuscation passes yet.
 
 ## Build
 
