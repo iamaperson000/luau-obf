@@ -41,6 +41,7 @@ pub fn render(
         .map(|f| MetaEntry {
             num_params: f.num_params,
             num_regs: std::cmp::max(f.num_regs, f.num_params),
+            num_upvals: f.num_upvals,
         })
         .collect();
 
@@ -61,6 +62,7 @@ pub fn render(
 struct MetaEntry {
     num_params: u16,
     num_regs: u16,
+    num_upvals: u16,
 }
 
 fn opname(k: OpKind) -> &'static str {

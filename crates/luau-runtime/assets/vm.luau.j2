@@ -28,9 +28,9 @@ local CODE = {
 {% for code_lit in codes %}    {{ code_lit }},
 {% endfor %}}
 
--- Proto metadata: { num_params, num_regs }
+-- Proto metadata: { num_params, num_regs, num_upvals }
 local META = {
-{% for m in meta %}    { {{ m.num_params }}, {{ m.num_regs }} },
+{% for m in meta %}    { {{ m.num_params }}, {{ m.num_regs }}, {{ m.num_upvals }} },
 {% endfor %}}
 
 -- Read a little-endian u16 at byte offset `pos` (1-based) of `code`.

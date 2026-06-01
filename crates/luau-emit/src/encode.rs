@@ -1,14 +1,16 @@
 use crate::opmap::OpMap;
-use luau_lir::{BlockLabel, LirFunction, LirInstr, Operand};
+use luau_lir::{BlockLabel, LirFunction, LirInstr, OpKind, Operand, UpvalSource};
 use std::collections::HashMap;
 
 /// Encode one function. Returns bytecode bytes.
 pub fn encode_function(f: &LirFunction, opmap: &OpMap) -> Vec<u8> {
     let mut instr_byte_offsets: Vec<u32> = Vec::with_capacity(f.instrs.len() + 1);
     let mut offset: u32 = 0;
+    // Track Closure-instruction count to index into f.closure_upval_sources.
+    let mut closure_counter: usize = 0;
     for instr in &f.instrs {
         instr_byte_offsets.push(offset);
-        offset += instr_size(instr);
+        offset += instr_size_for(instr, f, &mut closure_counter);
     }
     instr_byte_offsets.push(offset);
 
@@ -22,10 +24,11 @@ pub fn encode_function(f: &LirFunction, opmap: &OpMap) -> Vec<u8> {
         label_byte.insert(*label, byte_off);
     }
 
+    let mut closure_counter_emit: usize = 0;
     let mut out: Vec<u8> = Vec::with_capacity(offset as usize);
     for (i, instr) in f.instrs.iter().enumerate() {
         out.push(opmap.opcode_of(instr.op));
-        let after_this = instr_byte_offsets[i] + instr_size(instr);
+        let after_this = instr_byte_offsets[i] + instr_size_for_at(instr, f, closure_counter_emit);
         for operand in &instr.operands {
             match operand {
                 Operand::Reg(r) => push_u16(&mut out, r.0),
@@ -40,12 +43,45 @@ pub fn encode_function(f: &LirFunction, opmap: &OpMap) -> Vec<u8> {
                 }
             }
         }
+        // Closure has a trailing variable-length upvalue source list.
+        if instr.op == OpKind::Closure {
+            let sources = &f.closure_upval_sources[closure_counter_emit];
+            closure_counter_emit += 1;
+            push_u16(&mut out, sources.len() as u16);
+            for src in sources {
+                match src {
+                    UpvalSource::LocalReg(r) => {
+                        out.push(0);
+                        push_u16(&mut out, *r);
+                    }
+                    UpvalSource::ParentUpval(u) => {
+                        out.push(1);
+                        push_u16(&mut out, *u);
+                    }
+                }
+            }
+        }
     }
     out
 }
 
-fn instr_size(i: &LirInstr) -> u32 {
-    1 + (i.operands.len() as u32) * 2
+fn instr_size_for(i: &LirInstr, f: &LirFunction, closure_counter: &mut usize) -> u32 {
+    let base = 1 + (i.operands.len() as u32) * 2;
+    if i.op == OpKind::Closure {
+        let sources = &f.closure_upval_sources[*closure_counter];
+        *closure_counter += 1;
+        return base + 2 + (sources.len() as u32) * 3;
+    }
+    base
+}
+
+fn instr_size_for_at(i: &LirInstr, f: &LirFunction, closure_idx: usize) -> u32 {
+    let base = 1 + (i.operands.len() as u32) * 2;
+    if i.op == OpKind::Closure {
+        let sources = &f.closure_upval_sources[closure_idx];
+        return base + 2 + (sources.len() as u32) * 3;
+    }
+    base
 }
 
 fn push_u16(out: &mut Vec<u8>, v: u16) {

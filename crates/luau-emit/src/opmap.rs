@@ -1,19 +1,18 @@
 //! Maps symbolic OpKinds to integer opcode bytes.
 //!
-//! In Plan 2 the mapping is still deterministic and seed-independent.
-//! Plan 3+ introduces per-build randomization: keep the API stable so we
-//! just swap implementations.
+//! In Plan 3 the mapping is still deterministic and seed-independent.
+//! Plan 4+ introduces per-build randomization: keep the API stable.
 
 use luau_lir::OpKind;
 
 pub struct OpMap {
     /// table[OpKind index] = opcode byte
-    forward: [u8; 29],
+    forward: [u8; 31],
 }
 
 impl OpMap {
     pub fn new(_seed: &[u8; 32]) -> Self {
-        let mut forward = [0u8; 29];
+        let mut forward = [0u8; 31];
         for (i, slot) in forward.iter_mut().enumerate() {
             *slot = (i + 1) as u8;
         }
@@ -32,12 +31,17 @@ impl OpMap {
 
 pub const ALL_OPS: &[OpKind] = &[
     OpKind::LoadNil, OpKind::LoadTrue, OpKind::LoadFalse, OpKind::LoadConst,
-    OpKind::Move, OpKind::Add, OpKind::Sub, OpKind::Mul, OpKind::Div, OpKind::Mod,
-    OpKind::Pow, OpKind::Concat, OpKind::Lt, OpKind::Le, OpKind::Eq,
+    OpKind::Move,
+    OpKind::Add, OpKind::Sub, OpKind::Mul, OpKind::Div, OpKind::Mod, OpKind::Pow,
+    OpKind::Concat,
+    OpKind::Lt, OpKind::Le, OpKind::Eq,
     OpKind::Not, OpKind::Neg, OpKind::Len,
-    OpKind::GetGlobal, OpKind::SetGlobal, OpKind::Call, OpKind::Return,
-    OpKind::Jmp, OpKind::JmpIfTrue, OpKind::JmpIfFalse, OpKind::Closure,
+    OpKind::GetGlobal, OpKind::SetGlobal,
+    OpKind::Call, OpKind::Return,
+    OpKind::Jmp, OpKind::JmpIfTrue, OpKind::JmpIfFalse,
+    OpKind::Closure,
     OpKind::NewTable, OpKind::GetTable, OpKind::SetTable,
+    OpKind::GetUpval, OpKind::SetUpval,
 ];
 
 fn op_index(k: OpKind) -> usize {
