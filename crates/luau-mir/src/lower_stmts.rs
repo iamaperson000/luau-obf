@@ -115,6 +115,13 @@ fn lower_stmt(b: &mut FnBuilder, stmt: &HirStmt) -> Result<(), MirError> {
             Ok(())
         }
         HirStmt::NumericFor { var, start, stop, step, body } => {
+            if let Some(n) = constant_step_value(step) {
+                if n <= 0.0 {
+                    return Err(MirError::Unsupported(format!(
+                        "numeric `for` with non-positive step {n} (negative-step loops deferred to a later plan)"
+                    )));
+                }
+            }
             let i_slot = b.local_for(*var);
             let start_v = b.lower_expr(start)?;
             b.emit(Instr::Move { dst: i_slot, src: start_v });
@@ -206,5 +213,22 @@ fn lower_stmt(b: &mut FnBuilder, stmt: &HirStmt) -> Result<(), MirError> {
             });
             Ok(())
         }
+    }
+}
+
+/// Best-effort constant evaluation of a numeric-for step expression. Returns
+/// the constant value if it's a literal number or a unary-neg of a literal number;
+/// otherwise None.
+fn constant_step_value(e: &HirExpr) -> Option<f64> {
+    match e {
+        HirExpr::Literal(luau_hir::HirLiteral::Number(n)) => Some(*n),
+        HirExpr::UnOp(luau_hir::UnOp::Neg, inner) => {
+            if let HirExpr::Literal(luau_hir::HirLiteral::Number(n)) = inner.as_ref() {
+                Some(-*n)
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
 }

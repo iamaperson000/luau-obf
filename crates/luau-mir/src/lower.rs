@@ -458,6 +458,31 @@ mod tests {
     }
 
     #[test]
+    fn rejects_numeric_for_with_negative_literal_step() {
+        let ast = luau_parse::parse("for i = 10, 1, -1 do x = i end").unwrap();
+        let hir = luau_hir::lower::lower(&ast).unwrap();
+        let err = super::lower(&hir).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("non-positive step"), "got: {msg}");
+    }
+
+    #[test]
+    fn rejects_numeric_for_with_zero_literal_step() {
+        let ast = luau_parse::parse("for i = 1, 10, 0 do x = i end").unwrap();
+        let hir = luau_hir::lower::lower(&ast).unwrap();
+        let err = super::lower(&hir).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("non-positive step"), "got: {msg}");
+    }
+
+    #[test]
+    fn accepts_numeric_for_with_dynamic_step() {
+        // Dynamic step (variable) compiles; correctness at runtime is the user's problem.
+        let p = mir_of("local s = 1 for i = 1, 10, s do x = i end");
+        assert!(!p.main().blocks.is_empty());
+    }
+
+    #[test]
     fn break_in_while_jumps_to_exit() {
         let p = mir_of("while true do break end");
         let func = p.main();
