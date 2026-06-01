@@ -376,8 +376,14 @@ fn lower_suffix(
             let args = lower_call_args(lowerer, args)?;
             Ok(HirExpr::Call { callee: Box::new(current), args })
         }
-        Suffix::Call(Call::MethodCall(_)) => {
-            Err(HirError::Unsupported("method call (lowered in Task 4)".into()))
+        Suffix::Call(Call::MethodCall(mc)) => {
+            let method = mc.name().token().to_string();
+            let args = lower_call_args(lowerer, mc.args())?;
+            Ok(HirExpr::MethodCall {
+                obj: Box::new(current),
+                method,
+                args,
+            })
         }
         Suffix::Index(Index::Brackets { expression, .. }) => {
             let key = lower_expr(lowerer, expression)?;
@@ -747,5 +753,22 @@ mod tests {
         let TableEntry::Field(name, val) = &entries[0] else { panic!() };
         assert_eq!(name, "fn");
         assert!(matches!(val, HirExpr::Function(_)));
+    }
+
+    #[test]
+    fn lowers_method_call() {
+        let e = lower_one_expr("obj:method(1, 2)");
+        let HirExpr::MethodCall { obj, method, args } = e else { panic!() };
+        assert!(matches!(*obj, HirExpr::Symbol(_)));
+        assert_eq!(method, "method");
+        assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn lowers_chained_method_call() {
+        let e = lower_one_expr("a.b:c()");
+        let HirExpr::MethodCall { obj, method, .. } = e else { panic!() };
+        assert!(matches!(*obj, HirExpr::Index { .. }));
+        assert_eq!(method, "c");
     }
 }
