@@ -14,19 +14,42 @@ struct Lowerer {
     /// Stack of lexical scopes. Each scope maps source name → SymbolId for locals.
     /// Globals are NOT in any scope; they're resolved by absence.
     scopes: Vec<HashMap<String, SymbolId>>,
+    /// Parallel to `scopes`: scope_function_depth[i] is the function-nesting depth
+    /// of scopes[i]. The top-level chunk is depth 0; each nested function pushes
+    /// a fresh depth one higher.
+    scope_function_depth: Vec<u32>,
+    /// The function-nesting depth currently being lowered.
+    current_function_depth: u32,
 }
 
 impl Lowerer {
     fn new() -> Self {
-        Self { symbols: Vec::new(), scopes: vec![HashMap::new()] }
+        Self {
+            symbols: Vec::new(),
+            scopes: vec![HashMap::new()],
+            scope_function_depth: vec![0],
+            current_function_depth: 0,
+        }
     }
 
     fn push_scope(&mut self) {
         self.scopes.push(HashMap::new());
+        self.scope_function_depth.push(self.current_function_depth);
     }
 
     fn pop_scope(&mut self) {
         self.scopes.pop();
+        self.scope_function_depth.pop();
+    }
+
+    fn enter_function(&mut self) {
+        self.current_function_depth += 1;
+        self.push_scope();
+    }
+
+    fn exit_function(&mut self) {
+        self.pop_scope();
+        self.current_function_depth -= 1;
     }
 
     fn declare_local(&mut self, name: &str) -> SymbolId {
@@ -43,14 +66,23 @@ impl Lowerer {
     }
 
     /// Resolve a source name to a SymbolId. Searches local scopes from innermost
-    /// out; if not found, treats it as a global reference.
-    fn resolve(&mut self, name: &str) -> SymbolId {
-        for scope in self.scopes.iter().rev() {
+    /// out; returns the matching local if it's in the current function frame.
+    /// If a local with a shallower function-frame is found, returns an error
+    /// (upvalue capture is deferred to Plan 3). If no local matches, treats
+    /// the name as a global reference.
+    fn resolve(&mut self, name: &str) -> Result<SymbolId, HirError> {
+        for (i, scope) in self.scopes.iter().enumerate().rev() {
             if let Some(&id) = scope.get(name) {
-                return id;
+                if self.scope_function_depth[i] == self.current_function_depth {
+                    return Ok(id);
+                }
+                return Err(HirError::Unsupported(format!(
+                    "function body captures parent local `{}` (upvalues deferred to Plan 3)",
+                    name
+                )));
             }
         }
-        self.declare_global(name)
+        Ok(self.declare_global(name))
     }
 }
 
@@ -285,7 +317,7 @@ fn lower_var(
     match var {
         Var::Name(token) => {
             let name = token.token().to_string();
-            Ok(HirExpr::Symbol(lowerer.resolve(&name)))
+            Ok(HirExpr::Symbol(lowerer.resolve(&name)?))
         }
         Var::Expression(ve) => lower_var_expression(lowerer, ve),
         other => Err(HirError::Unsupported(format!("var form {other:?}"))),
@@ -298,7 +330,7 @@ fn lower_var_expression(
 ) -> Result<HirExpr, HirError> {
     use full_moon::ast::Prefix;
     let mut current = match ve.prefix() {
-        Prefix::Name(t) => HirExpr::Symbol(lowerer.resolve(&t.token().to_string())),
+        Prefix::Name(t) => HirExpr::Symbol(lowerer.resolve(&t.token().to_string())?),
         Prefix::Expression(e) => lower_expr(lowerer, e)?,
         other => return Err(HirError::Unsupported(format!("var prefix {other:?}"))),
     };
@@ -314,7 +346,7 @@ fn lower_call(
 ) -> Result<HirExpr, HirError> {
     use full_moon::ast::Prefix;
     let mut current = match call.prefix() {
-        Prefix::Name(t) => HirExpr::Symbol(lowerer.resolve(&t.token().to_string())),
+        Prefix::Name(t) => HirExpr::Symbol(lowerer.resolve(&t.token().to_string())?),
         Prefix::Expression(e) => lower_expr(lowerer, e)?,
         other => return Err(HirError::Unsupported(format!("call prefix {other:?}"))),
     };
@@ -457,7 +489,7 @@ fn lower_assign_target(
     use full_moon::ast::{Index, Prefix, Suffix, Var};
     match var {
         Var::Name(t) => {
-            let target = lowerer.resolve(&t.token().to_string());
+            let target = lowerer.resolve(&t.token().to_string())?;
             Ok(HirStmt::Assign { target, value })
         }
         Var::Expression(ve) => {
@@ -467,7 +499,7 @@ fn lower_assign_target(
             }
             let (last, rest) = suffixes.split_last().unwrap();
             let mut obj = match ve.prefix() {
-                Prefix::Name(t) => HirExpr::Symbol(lowerer.resolve(&t.token().to_string())),
+                Prefix::Name(t) => HirExpr::Symbol(lowerer.resolve(&t.token().to_string())?),
                 Prefix::Expression(e) => lower_expr(lowerer, e)?,
                 other => return Err(HirError::Unsupported(format!("assign prefix {other:?}"))),
             };
@@ -530,13 +562,13 @@ fn lower_function_decl(
 
     // Simple top-level decl: single name, no method colon.
     if names.len() == 1 && method_name.is_none() {
-        let symbol = lowerer.resolve(&names[0]);
+        let symbol = lowerer.resolve(&names[0])?;
         return Ok(vec![HirStmt::FunctionDecl { name: symbol, function }]);
     }
 
     // Dotted / method form. Walk the head as a Symbol, intermediate names as
     // Index reads, then emit IndexAssign(obj, key, function-as-value).
-    let head_sym = lowerer.resolve(&names[0]);
+    let head_sym = lowerer.resolve(&names[0])?;
     let mut obj = HirExpr::Symbol(head_sym);
 
     let (intermediate_end, key) = if let Some(m) = method_name {
@@ -567,7 +599,7 @@ fn lower_function_body_with_self(
     body: &full_moon::ast::FunctionBody,
     is_method: bool,
 ) -> Result<HirFunction, HirError> {
-    lowerer.push_scope();
+    lowerer.enter_function();
     let mut params = Vec::new();
     if is_method {
         params.push(lowerer.declare_local("self"));
@@ -579,17 +611,17 @@ fn lower_function_body_with_self(
                 params.push(lowerer.declare_local(&tok.token().to_string()));
             }
             Parameter::Ellipsis(_) => {
-                lowerer.pop_scope();
+                lowerer.exit_function();
                 return Err(HirError::Unsupported("varargs `...` (Plan 3)".into()));
             }
             other => {
-                lowerer.pop_scope();
+                lowerer.exit_function();
                 return Err(HirError::Unsupported(format!("parameter form {other:?}")));
             }
         }
     }
     let body = lower_block(lowerer, body.block())?;
-    lowerer.pop_scope();
+    lowerer.exit_function();
     Ok(HirFunction { params, body })
 }
 
@@ -911,5 +943,42 @@ mod tests {
         let HirExpr::Index { key: inner_key, .. } = obj else { panic!() };
         assert!(matches!(inner_key.as_ref(), HirExpr::Literal(HirLiteral::String(s)) if s == "b"));
         assert!(matches!(key, HirExpr::Literal(HirLiteral::String(s)) if s == "c"));
+    }
+
+    #[test]
+    fn rejects_anonymous_closure_capturing_local() {
+        let ast = luau_parse::parse("local x = 1 local f = function() return x end").unwrap();
+        let err = lower(&ast).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("captures parent local"), "got: {msg}");
+    }
+
+    #[test]
+    fn rejects_method_decl_capturing_outer_local() {
+        let ast = luau_parse::parse("local x = 1 local t = {} function t:m() return x end").unwrap();
+        let err = lower(&ast).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("captures parent local"), "got: {msg}");
+    }
+
+    #[test]
+    fn top_level_function_can_reference_global() {
+        // Top-level `function f() print("hi") end` references `print` as a global —
+        // that still works because globals are NOT looked up via the local-scope path.
+        let p = lower_str("function f() print(\"hi\") end");
+        assert_eq!(p.main.len(), 1);
+    }
+
+    #[test]
+    fn nested_function_can_access_own_params() {
+        // The new closure-capture check must NOT block use of the function's own params.
+        let p = lower_str("local f = function(x) return x + 1 end");
+        assert_eq!(p.main.len(), 1);
+    }
+
+    #[test]
+    fn nested_function_can_access_globals() {
+        let p = lower_str("local f = function() return print(\"hi\") end");
+        assert_eq!(p.main.len(), 1);
     }
 }
