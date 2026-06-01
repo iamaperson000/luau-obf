@@ -174,19 +174,7 @@ fn lower_stmt(
             lowerer.pop_scope();
             Ok(vec![HirStmt::NumericFor { var, start, stop, step, body }])
         }
-        Stmt::FunctionDeclaration(fd) => {
-            let name_path: Vec<&full_moon::tokenizer::TokenReference> =
-                fd.name().names().iter().collect();
-            if name_path.len() != 1 || fd.name().method_colon().is_some() {
-                return Err(HirError::Unsupported(
-                    "qualified or method-style function decl (Plan 1: top-level only)".into(),
-                ));
-            }
-            let name = name_path[0].token().to_string();
-            let symbol = lowerer.resolve(&name);
-            let function = lower_function_body(lowerer, fd.body())?;
-            Ok(vec![HirStmt::FunctionDecl { name: symbol, function }])
-        }
+        Stmt::FunctionDeclaration(fd) => lower_function_decl(lowerer, fd),
         Stmt::LocalFunction(_) => Err(HirError::Unsupported(
             "`local function` (closures with upvalues are Plan 2)".into(),
         )),
@@ -220,27 +208,7 @@ fn lower_function_body(
     lowerer: &mut Lowerer,
     body: &full_moon::ast::FunctionBody,
 ) -> Result<HirFunction, HirError> {
-    lowerer.push_scope();
-    let mut params = Vec::new();
-    for p in body.parameters() {
-        use full_moon::ast::Parameter;
-        match p {
-            Parameter::Name(tok) => {
-                params.push(lowerer.declare_local(&tok.token().to_string()));
-            }
-            Parameter::Ellipsis(_) => {
-                lowerer.pop_scope();
-                return Err(HirError::Unsupported("varargs `...` (Plan 2)".into()));
-            }
-            other => {
-                lowerer.pop_scope();
-                return Err(HirError::Unsupported(format!("parameter form {other:?}")));
-            }
-        }
-    }
-    let body = lower_block(lowerer, body.block())?;
-    lowerer.pop_scope();
-    Ok(HirFunction { params, body })
+    lower_function_body_with_self(lowerer, body, false)
 }
 
 fn parse_luau_number(raw: &str) -> Option<f64> {
@@ -551,6 +519,80 @@ fn lower_table_ctor(
     Ok(HirExpr::Table(entries))
 }
 
+fn lower_function_decl(
+    lowerer: &mut Lowerer,
+    fd: &full_moon::ast::FunctionDeclaration,
+) -> Result<Vec<HirStmt>, HirError> {
+    let names: Vec<String> = fd.name().names().iter().map(|t| t.token().to_string()).collect();
+    let method_name: Option<String> = fd.name().method_name().map(|t| t.token().to_string());
+
+    let function = lower_function_body_with_self(lowerer, fd.body(), method_name.is_some())?;
+
+    // Simple top-level decl: single name, no method colon.
+    if names.len() == 1 && method_name.is_none() {
+        let symbol = lowerer.resolve(&names[0]);
+        return Ok(vec![HirStmt::FunctionDecl { name: symbol, function }]);
+    }
+
+    // Dotted / method form. Walk the head as a Symbol, intermediate names as
+    // Index reads, then emit IndexAssign(obj, key, function-as-value).
+    let head_sym = lowerer.resolve(&names[0]);
+    let mut obj = HirExpr::Symbol(head_sym);
+
+    let (intermediate_end, key) = if let Some(m) = method_name {
+        // All of names[1..] are intermediate index reads; method name is the final key.
+        (names.len(), m)
+    } else {
+        // names[1..len-1] are intermediate; names[len-1] is the final key.
+        (names.len() - 1, names[names.len() - 1].clone())
+    };
+
+    for i in 1..intermediate_end {
+        obj = HirExpr::Index {
+            obj: Box::new(obj),
+            key: Box::new(HirExpr::Literal(HirLiteral::String(names[i].clone()))),
+        };
+    }
+
+    Ok(vec![HirStmt::IndexAssign {
+        obj,
+        key: HirExpr::Literal(HirLiteral::String(key)),
+        value: HirExpr::Function(function),
+    }])
+}
+
+/// Lower a function body, optionally prepending an implicit `self` parameter.
+fn lower_function_body_with_self(
+    lowerer: &mut Lowerer,
+    body: &full_moon::ast::FunctionBody,
+    is_method: bool,
+) -> Result<HirFunction, HirError> {
+    lowerer.push_scope();
+    let mut params = Vec::new();
+    if is_method {
+        params.push(lowerer.declare_local("self"));
+    }
+    for p in body.parameters() {
+        use full_moon::ast::Parameter;
+        match p {
+            Parameter::Name(tok) => {
+                params.push(lowerer.declare_local(&tok.token().to_string()));
+            }
+            Parameter::Ellipsis(_) => {
+                lowerer.pop_scope();
+                return Err(HirError::Unsupported("varargs `...` (Plan 3)".into()));
+            }
+            other => {
+                lowerer.pop_scope();
+                return Err(HirError::Unsupported(format!("parameter form {other:?}")));
+            }
+        }
+    }
+    let body = lower_block(lowerer, body.block())?;
+    lowerer.pop_scope();
+    Ok(HirFunction { params, body })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -835,5 +877,39 @@ mod tests {
         let p = lower_str("while x do break end");
         let HirStmt::While { body, .. } = &p.main[0] else { panic!() };
         assert!(matches!(&body[0], HirStmt::Break));
+    }
+
+    #[test]
+    fn lowers_simple_function_decl_unchanged() {
+        let p = lower_str("function f(x) return x end");
+        assert!(matches!(&p.main[0], HirStmt::FunctionDecl { .. }));
+    }
+
+    #[test]
+    fn lowers_dotted_function_decl() {
+        let p = lower_str("function t.f(x) return x end");
+        let HirStmt::IndexAssign { obj, key, value } = &p.main[0] else { panic!() };
+        assert!(matches!(obj, HirExpr::Symbol(_)));
+        assert!(matches!(key, HirExpr::Literal(HirLiteral::String(s)) if s == "f"));
+        let HirExpr::Function(f) = value else { panic!() };
+        assert_eq!(f.params.len(), 1);
+    }
+
+    #[test]
+    fn lowers_method_function_decl_adds_self() {
+        let p = lower_str("function obj:greet(name) return name end");
+        let HirStmt::IndexAssign { key, value, .. } = &p.main[0] else { panic!() };
+        assert!(matches!(key, HirExpr::Literal(HirLiteral::String(s)) if s == "greet"));
+        let HirExpr::Function(f) = value else { panic!() };
+        assert_eq!(f.params.len(), 2);
+    }
+
+    #[test]
+    fn lowers_deep_dotted_function_decl() {
+        let p = lower_str("function a.b.c() end");
+        let HirStmt::IndexAssign { obj, key, .. } = &p.main[0] else { panic!() };
+        let HirExpr::Index { key: inner_key, .. } = obj else { panic!() };
+        assert!(matches!(inner_key.as_ref(), HirExpr::Literal(HirLiteral::String(s)) if s == "b"));
+        assert!(matches!(key, HirExpr::Literal(HirLiteral::String(s)) if s == "c"));
     }
 }
