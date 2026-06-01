@@ -90,7 +90,9 @@ fn lower_stmt(b: &mut FnBuilder, stmt: &HirStmt) -> Result<(), MirError> {
                 else_block: exit,
             });
             b.switch_to(body_block);
+            b.loop_exits.push(exit);
             lower(b, body)?;
+            b.loop_exits.pop();
             b.set_terminator(Terminator::Goto(header));
             b.switch_to(exit);
             Ok(())
@@ -100,7 +102,9 @@ fn lower_stmt(b: &mut FnBuilder, stmt: &HirStmt) -> Result<(), MirError> {
             let exit = b.new_block();
             b.set_terminator(Terminator::Goto(body_block));
             b.switch_to(body_block);
+            b.loop_exits.push(exit);
             lower(b, body)?;
+            b.loop_exits.pop();
             let cond_v = b.lower_expr(cond)?;
             b.set_terminator(Terminator::Branch {
                 cond: Value::VLocal(cond_v),
@@ -126,7 +130,6 @@ fn lower_stmt(b: &mut FnBuilder, stmt: &HirStmt) -> Result<(), MirError> {
             let exit = b.new_block();
             b.set_terminator(Terminator::Goto(header));
             b.switch_to(header);
-            // Plan 1 simplification: support only positive step (default 1). Plan 2 generalizes.
             let cmp_dst = b.fresh_local();
             b.emit(Instr::BinOp {
                 dst: cmp_dst,
@@ -140,7 +143,9 @@ fn lower_stmt(b: &mut FnBuilder, stmt: &HirStmt) -> Result<(), MirError> {
                 else_block: exit,
             });
             b.switch_to(body_block);
+            b.loop_exits.push(exit);
             lower(b, body)?;
+            b.loop_exits.pop();
             let new_i = b.fresh_local();
             b.emit(Instr::BinOp {
                 dst: new_i,
@@ -178,11 +183,26 @@ fn lower_stmt(b: &mut FnBuilder, stmt: &HirStmt) -> Result<(), MirError> {
             }
             Ok(())
         }
-        HirStmt::IndexAssign { .. } => {
-            Err(MirError::Unsupported("IndexAssign (Plan 2 / Task 9)".into()))
-        }
         HirStmt::Break => {
-            Err(MirError::Unsupported("break (Plan 2 / Task 9)".into()))
+            let exit = *b
+                .loop_exits
+                .last()
+                .ok_or_else(|| MirError::Unsupported("break outside loop".into()))?;
+            b.set_terminator(Terminator::Goto(exit));
+            let dead = b.new_block();
+            b.switch_to(dead);
+            Ok(())
+        }
+        HirStmt::IndexAssign { obj, key, value } => {
+            let obj_v = b.lower_expr(obj)?;
+            let key_v = b.lower_expr(key)?;
+            let val_v = b.lower_expr(value)?;
+            b.emit(Instr::SetIndex {
+                obj: Value::VLocal(obj_v),
+                key: Value::VLocal(key_v),
+                value: Value::VLocal(val_v),
+            });
+            Ok(())
         }
     }
 }

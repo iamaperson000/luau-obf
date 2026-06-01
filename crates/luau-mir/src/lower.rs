@@ -22,6 +22,8 @@ pub(crate) struct FnBuilder<'a> {
     pub(crate) pending_functions: &'a mut Vec<(FunctionId, HirFunction)>,
     pub(crate) next_function: &'a mut u32,
     pub(crate) params: Vec<VLocal>,
+    /// Stack of innermost-first loop-exit blocks. `Break` jumps to the top.
+    pub(crate) loop_exits: Vec<BlockId>,
 }
 
 impl<'a> FnBuilder<'a> {
@@ -43,6 +45,7 @@ impl<'a> FnBuilder<'a> {
             pending_functions,
             next_function,
             params: Vec::new(),
+            loop_exits: Vec::new(),
         }
     }
 
@@ -440,5 +443,36 @@ mod tests {
         let has_get_index = instrs.iter().any(|i| matches!(i, Instr::GetIndex { .. }));
         let has_call = instrs.iter().any(|i| matches!(i, Instr::Call { .. }));
         assert!(has_get_index && has_call);
+    }
+
+    #[test]
+    fn lowers_index_assign() {
+        let p = mir_of("local t = {} t.x = 1");
+        let has_set_index = p
+            .main()
+            .blocks
+            .iter()
+            .flat_map(|b| b.instrs.iter())
+            .any(|i| matches!(i, Instr::SetIndex { .. }));
+        assert!(has_set_index);
+    }
+
+    #[test]
+    fn break_in_while_jumps_to_exit() {
+        let p = mir_of("while true do break end");
+        let func = p.main();
+        // The function should contain a Branch whose else_block is also targeted by a Goto somewhere.
+        let header_else = func
+            .blocks
+            .iter()
+            .find_map(|bb| match &bb.terminator {
+                Terminator::Branch { else_block, .. } => Some(*else_block),
+                _ => None,
+            })
+            .expect("found while header");
+        let break_goto_exists = func.blocks.iter().any(|bb| {
+            matches!(&bb.terminator, Terminator::Goto(target) if *target == header_else)
+        });
+        assert!(break_goto_exists, "expected a Goto to the loop exit");
     }
 }
