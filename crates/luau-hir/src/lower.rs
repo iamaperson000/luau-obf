@@ -309,9 +309,10 @@ fn lower_expr(
         E::FunctionCall(call) => lower_call(lowerer, call),
         E::TypeAssertion { expression, .. } => lower_expr(lowerer, expression),
         E::TableConstructor(tc) => lower_table_ctor(lowerer, tc),
-        E::Function(_) => Err(HirError::Unsupported(
-            "anonymous function expression (added in Task 3)".into(),
-        )),
+        E::Function(anon) => {
+            let function = lower_function_body(lowerer, &anon.1)?;
+            Ok(HirExpr::Function(function))
+        }
         other => Err(HirError::Unsupported(format!("expression form {other:?}"))),
     }
 }
@@ -729,5 +730,22 @@ mod tests {
         let HirExpr::Call { args, .. } = e else { panic!() };
         assert_eq!(args.len(), 1);
         assert!(matches!(&args[0], HirExpr::Table(_)));
+    }
+
+    #[test]
+    fn lowers_anonymous_function() {
+        let e = lower_one_expr("function(x) return x + 1 end");
+        let HirExpr::Function(f) = e else { panic!() };
+        assert_eq!(f.params.len(), 1);
+        assert_eq!(f.body.len(), 1);
+    }
+
+    #[test]
+    fn lowers_anonymous_function_in_table() {
+        let e = lower_one_expr("{ fn = function() return 7 end }");
+        let HirExpr::Table(entries) = e else { panic!() };
+        let TableEntry::Field(name, val) = &entries[0] else { panic!() };
+        assert_eq!(name, "fn");
+        assert!(matches!(val, HirExpr::Function(_)));
     }
 }
