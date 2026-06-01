@@ -47,6 +47,15 @@ pub enum TableEntry {
     Keyed(HirExpr, HirExpr),
 }
 
+/// How a function's upvalue is sourced from its immediately-enclosing frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpvalueSource {
+    /// The parent function's local (by SymbolId).
+    ParentLocal(SymbolId),
+    /// The parent function's upvalue (by index into its upvalues vec).
+    ParentUpval(u32),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
     Add, Sub, Mul, Div, Mod, Pow,
@@ -80,6 +89,8 @@ pub enum HirExpr {
     /// `function(params) body end` — anonymous function expression.
     /// Plan 2: cannot capture parent locals (references become globals).
     Function(HirFunction),
+    /// Read this function's upvalue at the given index.
+    Upvalue(u32),
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +99,8 @@ pub enum HirStmt {
     LocalDecl { symbol: SymbolId, value: HirExpr },
     /// `name = expr` where `name` is a resolved symbol.
     Assign { target: SymbolId, value: HirExpr },
+    /// Write this function's upvalue at the given index.
+    UpvalueAssign { upvalue: u32, value: HirExpr },
     /// `obj[key] = value` or `obj.name = value`.
     IndexAssign { obj: HirExpr, key: HirExpr, value: HirExpr },
     /// `f(args...)` as a statement (return value discarded).
@@ -119,6 +132,10 @@ pub enum HirStmt {
 pub struct HirFunction {
     pub params: Vec<SymbolId>,
     pub body: Vec<HirStmt>,
+    /// Upvalue sources, in declaration order. The index in this vec is the
+    /// upvalue identifier used by `HirExpr::Upvalue` and `HirStmt::UpvalueAssign`
+    /// inside this function's body.
+    pub upvalues: Vec<UpvalueSource>,
 }
 
 #[derive(Debug, Clone)]

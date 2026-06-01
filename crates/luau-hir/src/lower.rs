@@ -622,7 +622,7 @@ fn lower_function_body_with_self(
     }
     let body = lower_block(lowerer, body.block())?;
     lowerer.exit_function();
-    Ok(HirFunction { params, body })
+    Ok(HirFunction { params, body, upvalues: Vec::new() })
 }
 
 #[cfg(test)]

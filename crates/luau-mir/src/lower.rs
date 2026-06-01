@@ -231,6 +231,8 @@ impl<'a> FnBuilder<'a> {
                 self.emit(Instr::MakeClosure { dst, function: fid });
                 Ok(dst)
             }
+            // TODO(Task 4): implement upvalue handling.
+            _ => Err(MirError::Unsupported("upvalue handling deferred to Task 4".into())),
         }
     }
 
@@ -315,7 +317,7 @@ pub fn lower(hir: &HirProgram) -> Result<MirProgram, MirError> {
     // Main chunk: wrap top-level stmts as a parameterless function.
     let main_id = FunctionId(next_function);
     next_function += 1;
-    pending.push((main_id, HirFunction { params: Vec::new(), body: hir.main.clone() }));
+    pending.push((main_id, HirFunction { params: Vec::new(), body: hir.main.clone(), upvalues: Vec::new() }));
 
     while let Some((fid, fhir)) = pending.pop() {
         let mut builder =

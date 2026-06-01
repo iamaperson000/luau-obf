@@ -213,6 +213,8 @@ fn lower_stmt(b: &mut FnBuilder, stmt: &HirStmt) -> Result<(), MirError> {
             });
             Ok(())
         }
+        // TODO(Task 4): implement upvalue handling.
+        _ => Err(MirError::Unsupported("upvalue handling deferred to Task 4".into())),
     }
 }
 
