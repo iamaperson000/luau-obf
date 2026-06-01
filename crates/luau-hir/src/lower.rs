@@ -2,7 +2,7 @@
 
 use crate::{
     BinOp, HirError, HirExpr, HirFunction, HirLiteral, HirProgram, HirStmt, Symbol, SymbolId,
-    SymbolKind, UnOp,
+    SymbolKind, TableEntry, UnOp,
 };
 use luau_parse::Ast;
 use std::collections::HashMap;
@@ -493,16 +493,16 @@ fn lower_table_ctor(
             Field::ExpressionKey { key, value, .. } => {
                 let k = lower_expr(lowerer, key)?;
                 let v = lower_expr(lowerer, value)?;
-                entries.push(crate::TableEntry::Keyed(k, v));
+                entries.push(TableEntry::Keyed(k, v));
             }
             Field::NameKey { key, value, .. } => {
                 let name = key.token().to_string();
                 let v = lower_expr(lowerer, value)?;
-                entries.push(crate::TableEntry::Field(name, v));
+                entries.push(TableEntry::Field(name, v));
             }
             Field::NoKey(value) => {
                 let v = lower_expr(lowerer, value)?;
-                entries.push(crate::TableEntry::Array(v));
+                entries.push(TableEntry::Array(v));
             }
             other => return Err(HirError::Unsupported(format!("table field {other:?}"))),
         }
