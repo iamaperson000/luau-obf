@@ -182,8 +182,33 @@ fn lower_instr(instr: &MInstr, rm: &RegMap, scratch_base: u16, out: &mut Vec<Lir
                 ],
             });
         }
-        // Task 11 will fill in proper lowering for table instructions.
-        MInstr::NewTable { .. } | MInstr::GetIndex { .. } | MInstr::SetIndex { .. } => {}
+        MInstr::NewTable { dst } => {
+            out.push(LirInstr {
+                op: OpKind::NewTable,
+                operands: vec![Operand::Reg(Reg(rm.get(*dst)))],
+            });
+        }
+        MInstr::GetIndex { dst, obj, key } => {
+            let obj_r = val_to_reg(*obj, rm);
+            let key_r = val_to_reg(*key, rm);
+            out.push(LirInstr {
+                op: OpKind::GetTable,
+                operands: vec![
+                    Operand::Reg(Reg(rm.get(*dst))),
+                    Operand::Reg(obj_r),
+                    Operand::Reg(key_r),
+                ],
+            });
+        }
+        MInstr::SetIndex { obj, key, value } => {
+            let obj_r = val_to_reg(*obj, rm);
+            let key_r = val_to_reg(*key, rm);
+            let val_r = val_to_reg(*value, rm);
+            out.push(LirInstr {
+                op: OpKind::SetTable,
+                operands: vec![Operand::Reg(obj_r), Operand::Reg(key_r), Operand::Reg(val_r)],
+            });
+        }
     }
 }
 
@@ -326,5 +351,16 @@ print(y)
         // The function's num_regs must exceed the highest VLocal register
         // used for locals (fn_ref, x, y), because scratch goes beyond.
         assert!(main.num_regs > 3, "expected scratch zone past locals, got num_regs={}", main.num_regs);
+    }
+
+    #[test]
+    fn table_program_lowers_to_table_opcodes() {
+        let p = lir_of("local t = {1, 2} t.x = 3 print(t[1] + t.x)");
+        let main = &p.functions[0];
+        let ops: Vec<OpKind> = main.instrs.iter().map(|i| i.op).collect();
+        assert!(ops.contains(&OpKind::NewTable));
+        assert!(ops.contains(&OpKind::SetTable));
+        assert!(ops.contains(&OpKind::GetTable));
+        assert!(ops.contains(&OpKind::Call));
     }
 }
