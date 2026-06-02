@@ -1,0 +1,206 @@
+-- luau-obf runtime
+-- Generated; do not edit by hand.
+
+local _ENV_ = _ENV or getfenv(1)
+local _select = select
+local _error = error
+local _pcall = pcall
+local _tostring = tostring
+local _type = type
+local _sbyte = string.byte
+local _ssub = string.sub
+local _schar = string.char
+local _tunpack = table.unpack or unpack
+local _tcreate = function(n) local t = {} for i=1,n do t[i] = false end return t end
+local _floor = math.floor
+
+-- Opcode constants
+{% for opname, num in opcodes %}local OP_{{ opname }} = {{ num }}
+{% endfor %}
+
+-- Constant pools per proto.
+local CONSTS = {
+{% for proto_consts in consts %}    { {{ proto_consts }} },
+{% endfor %}}
+
+-- Bytecode strings per proto.
+local CODE = {
+{% for code_lit in codes %}    {{ code_lit }},
+{% endfor %}}
+
+-- Proto metadata: { num_params, num_regs }
+local META = {
+{% for m in meta %}    { {{ m.num_params }}, {{ m.num_regs }} },
+{% endfor %}}
+
+-- Read a little-endian u16 at byte offset `pos` (1-based) of `code`.
+local function read_u16(code, pos)
+    local lo = _sbyte(code, pos)
+    local hi = _sbyte(code, pos + 1)
+    return lo + hi * 256
+end
+
+-- Read signed i16 at 1-based offset.
+local function read_i16(code, pos)
+    local v = read_u16(code, pos)
+    if v >= 32768 then v = v - 65536 end
+    return v
+end
+
+local vm_call
+vm_call = function(proto_id, args, nargs)
+    local code = CODE[proto_id + 1]
+    local consts = CONSTS[proto_id + 1]
+    local meta = META[proto_id + 1]
+    local num_params = meta[1]
+    local num_regs = meta[2]
+    local regs = _tcreate(num_regs + 1)
+    for i = 1, num_params do
+        regs[i - 1] = args[i]
+    end
+    local pc = 1
+    local code_len = #code
+    while pc <= code_len do
+        local op = _sbyte(code, pc)
+        pc = pc + 1
+        if op == OP_LoadNil then
+            local a = read_u16(code, pc); pc = pc + 2
+            regs[a] = nil
+        elseif op == OP_LoadTrue then
+            local a = read_u16(code, pc); pc = pc + 2
+            regs[a] = true
+        elseif op == OP_LoadFalse then
+            local a = read_u16(code, pc); pc = pc + 2
+            regs[a] = false
+        elseif op == OP_LoadConst then
+            local a = read_u16(code, pc); pc = pc + 2
+            local b = read_u16(code, pc); pc = pc + 2
+            regs[a] = consts[b + 1]
+        elseif op == OP_Move then
+            local a = read_u16(code, pc); pc = pc + 2
+            local b = read_u16(code, pc); pc = pc + 2
+            regs[a] = regs[b]
+        elseif op == OP_Add then
+            local a = read_u16(code, pc); pc = pc + 2
+            local b = read_u16(code, pc); pc = pc + 2
+            local c = read_u16(code, pc); pc = pc + 2
+            regs[a] = regs[b] + regs[c]
+        elseif op == OP_Sub then
+            local a = read_u16(code, pc); pc = pc + 2
+            local b = read_u16(code, pc); pc = pc + 2
+            local c = read_u16(code, pc); pc = pc + 2
+            regs[a] = regs[b] - regs[c]
+        elseif op == OP_Mul then
+            local a = read_u16(code, pc); pc = pc + 2
+            local b = read_u16(code, pc); pc = pc + 2
+            local c = read_u16(code, pc); pc = pc + 2
+            regs[a] = regs[b] * regs[c]
+        elseif op == OP_Div then
+            local a = read_u16(code, pc); pc = pc + 2
+            local b = read_u16(code, pc); pc = pc + 2
+            local c = read_u16(code, pc); pc = pc + 2
+            regs[a] = regs[b] / regs[c]
+        elseif op == OP_Mod then
+            local a = read_u16(code, pc); pc = pc + 2
+            local b = read_u16(code, pc); pc = pc + 2
+            local c = read_u16(code, pc); pc = pc + 2
+            regs[a] = regs[b] % regs[c]
+        elseif op == OP_Pow then
+            local a = read_u16(code, pc); pc = pc + 2
+            local b = read_u16(code, pc); pc = pc + 2
+            local c = read_u16(code, pc); pc = pc + 2
+            regs[a] = regs[b] ^ regs[c]
+        elseif op == OP_Concat then
+            local a = read_u16(code, pc); pc = pc + 2
+            local b = read_u16(code, pc); pc = pc + 2
+            local c = read_u16(code, pc); pc = pc + 2
+            regs[a] = _tostring(regs[b]) .. _tostring(regs[c])
+        elseif op == OP_Lt then
+            local a = read_u16(code, pc); pc = pc + 2
+            local b = read_u16(code, pc); pc = pc + 2
+            local c = read_u16(code, pc); pc = pc + 2
+            regs[a] = regs[b] < regs[c]
+        elseif op == OP_Le then
+            local a = read_u16(code, pc); pc = pc + 2
+            local b = read_u16(code, pc); pc = pc + 2
+            local c = read_u16(code, pc); pc = pc + 2
+            regs[a] = regs[b] <= regs[c]
+        elseif op == OP_Eq then
+            local a = read_u16(code, pc); pc = pc + 2
+            local b = read_u16(code, pc); pc = pc + 2
+            local c = read_u16(code, pc); pc = pc + 2
+            regs[a] = regs[b] == regs[c]
+        elseif op == OP_Not then
+            local a = read_u16(code, pc); pc = pc + 2
+            local b = read_u16(code, pc); pc = pc + 2
+            regs[a] = not regs[b]
+        elseif op == OP_Neg then
+            local a = read_u16(code, pc); pc = pc + 2
+            local b = read_u16(code, pc); pc = pc + 2
+            regs[a] = -regs[b]
+        elseif op == OP_Len then
+            local a = read_u16(code, pc); pc = pc + 2
+            local b = read_u16(code, pc); pc = pc + 2
+            regs[a] = #regs[b]
+        elseif op == OP_GetGlobal then
+            local a = read_u16(code, pc); pc = pc + 2
+            local b = read_u16(code, pc); pc = pc + 2
+            regs[a] = _ENV_[consts[b + 1]]
+        elseif op == OP_SetGlobal then
+            local a = read_u16(code, pc); pc = pc + 2
+            local b = read_u16(code, pc); pc = pc + 2
+            _ENV_[consts[a + 1]] = regs[b]
+        elseif op == OP_Call then
+            local a = read_u16(code, pc); pc = pc + 2
+            local b = read_u16(code, pc); pc = pc + 2
+            local n = read_i16(code, pc); pc = pc + 2
+            local fn = regs[b]
+            local call_args = {}
+            for i = 1, n do
+                call_args[i] = regs[b + i]
+            end
+            local result = fn(_tunpack(call_args, 1, n))
+            if a ~= 0xFFFF then
+                regs[a] = result
+            end
+        elseif op == OP_Return then
+            local a = read_u16(code, pc); pc = pc + 2
+            if a == 0xFFFF then
+                return nil
+            else
+                return regs[a]
+            end
+        elseif op == OP_Jmp then
+            local delta = read_i16(code, pc); pc = pc + 2
+            pc = pc + delta
+        elseif op == OP_JmpIfTrue then
+            local a = read_u16(code, pc); pc = pc + 2
+            local delta = read_i16(code, pc); pc = pc + 2
+            if regs[a] then
+                pc = pc + delta
+            end
+        elseif op == OP_JmpIfFalse then
+            local a = read_u16(code, pc); pc = pc + 2
+            local delta = read_i16(code, pc); pc = pc + 2
+            if not regs[a] then
+                pc = pc + delta
+            end
+        elseif op == OP_Closure then
+            local a = read_u16(code, pc); pc = pc + 2
+            local pid = read_u16(code, pc); pc = pc + 2
+            regs[a] = function(...)
+                local pa = { ... }
+                local n = _select("#", ...)
+                return vm_call(pid, pa, n)
+            end
+        else
+            _error("luau-obf: unknown opcode " .. _tostring(op))
+        end
+    end
+    return nil
+end
+
+-- Bootstrap: main proto is index 0; forward varargs.
+local main_args = { ... }
+local main_n = _select("#", ...)
+return vm_call(0, main_args, main_n)
