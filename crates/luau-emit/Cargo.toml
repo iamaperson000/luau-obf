@@ -1,0 +1,16 @@
+[package]
+name = "luau-emit"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+luau-lir = { path = "../luau-lir" }
+luau-runtime = { path = "../luau-runtime" }
+luau-mir = { path = "../luau-mir" }
+minijinja = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
