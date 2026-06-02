@@ -261,14 +261,53 @@ mod tests {
     fn mir_of(src: &str) -> MirProgram {
         let ast = luau_parse::parse(src).expect("parse");
         let hir = hir_lower(&ast).expect("hir");
-        lower(&hir).expect("mir")
+        super::lower(&hir).expect("mir")
     }
 
     #[test]
-    fn empty_program_compiles_to_main_only() {
-        // With empty source, lower_stmts on the empty body trivially succeeds.
+    fn empty_program_has_main() {
         let p = mir_of("");
         assert_eq!(p.functions.len(), 1);
-        assert!(p.main().blocks.len() >= 1);
+        assert_eq!(p.main().blocks.len(), 1);
+        assert!(matches!(p.main().blocks[0].terminator, Terminator::Return(None)));
+    }
+
+    #[test]
+    fn local_decl_emits_load_then_move() {
+        let p = mir_of("local x = 1");
+        let entry = &p.main().blocks[0];
+        assert!(matches!(entry.instrs[0], Instr::LoadConst { .. }));
+    }
+
+    #[test]
+    fn if_else_creates_three_extra_blocks() {
+        let p = mir_of("if x then y = 1 else y = 2 end");
+        // entry + then + else + join = 4 blocks.
+        assert_eq!(p.main().blocks.len(), 4);
+    }
+
+    #[test]
+    fn while_creates_header_and_exit() {
+        let p = mir_of("while x do y = 1 end");
+        // entry + header + body + exit = 4 blocks.
+        assert_eq!(p.main().blocks.len(), 4);
+        let header = &p.main().blocks[1];
+        assert!(matches!(header.terminator, Terminator::Branch { .. }));
+    }
+
+    #[test]
+    fn function_decl_queues_function() {
+        let p = mir_of("function f(x) return x end");
+        assert_eq!(p.functions.len(), 2);
+        let f = &p.functions[1];
+        assert_eq!(f.params.len(), 1);
+        assert!(matches!(f.blocks[0].terminator, Terminator::Return(Some(_))));
+    }
+
+    #[test]
+    fn return_after_unreachable_creates_dead_block() {
+        let p = mir_of("function f() return 1 end");
+        let f = &p.functions[1];
+        assert!(f.blocks.len() >= 2, "expected dead-block sentinel after return");
     }
 }
