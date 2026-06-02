@@ -1,0 +1,15 @@
+[package]
+name = "luau-passes"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+luau-mir = { path = "../luau-mir" }
+rand_chacha = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+luau-hir = { path = "../luau-hir" }
+luau-parse = { path = "../luau-parse" }
