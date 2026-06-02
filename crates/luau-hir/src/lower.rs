@@ -251,6 +251,19 @@ fn lower_function_body(
     Ok(HirFunction { params, body })
 }
 
+fn parse_luau_number(raw: &str) -> Option<f64> {
+    // Strip underscore separators (valid in Luau numeric literals).
+    let s_owned: String = raw.chars().filter(|c| *c != '_').collect();
+    let s = s_owned.as_str();
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        return u64::from_str_radix(hex, 16).ok().map(|v| v as f64);
+    }
+    if let Some(bin) = s.strip_prefix("0b").or_else(|| s.strip_prefix("0B")) {
+        return u64::from_str_radix(bin, 2).ok().map(|v| v as f64);
+    }
+    s.parse::<f64>().ok()
+}
+
 fn lower_expr(
     lowerer: &mut Lowerer,
     expr: &full_moon::ast::Expression,
@@ -258,10 +271,9 @@ fn lower_expr(
     use full_moon::ast::Expression as E;
     match expr {
         E::Number(token) => {
-            let s = token.token().to_string();
-            let n: f64 = s.parse().map_err(|_| {
-                HirError::Unsupported(format!("could not parse numeric literal {s:?}"))
-            })?;
+            let raw = token.token().to_string();
+            let n = parse_luau_number(&raw)
+                .ok_or_else(|| HirError::Unsupported(format!("could not parse numeric literal {raw:?}")))?;
             Ok(HirExpr::Literal(HirLiteral::Number(n)))
         }
         E::String(token) => {
@@ -569,5 +581,26 @@ mod tests {
     fn rejects_local_function() {
         let ast = luau_parse::parse("local function f() end").unwrap();
         assert!(lower(&ast).is_err());
+    }
+
+    #[test]
+    fn hex_literal() {
+        let e = lower_one_expr("0xff");
+        let HirExpr::Literal(HirLiteral::Number(n)) = e else { panic!() };
+        assert_eq!(n, 255.0);
+    }
+
+    #[test]
+    fn underscore_separator() {
+        let e = lower_one_expr("1_000_000");
+        let HirExpr::Literal(HirLiteral::Number(n)) = e else { panic!() };
+        assert_eq!(n, 1000000.0);
+    }
+
+    #[test]
+    fn hex_with_underscore() {
+        let e = lower_one_expr("0xDE_AD");
+        let HirExpr::Literal(HirLiteral::Number(n)) = e else { panic!() };
+        assert_eq!(n, 0xDEAD as f64);
     }
 }
