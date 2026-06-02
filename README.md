@@ -1,7 +1,6 @@
 # luau-obf
 
-Rust-implemented Luau obfuscator. VM-based, loadstring-style protection
-intended for Roblox scripts.
+Rust-implemented Luau obfuscator. VM-based.
 
 **Status:** Plan 3 — closures with upvalues. The obfuscator round-trips an
 expanded Luau subset (Plan 2 features + `local function`, anonymous
