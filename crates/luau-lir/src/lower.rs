@@ -24,11 +24,32 @@ fn lower_function(f: &MirFunction) -> Result<LirFunction, LirError> {
 
     let label_of = |b: BlockId| BlockLabel(b.0);
 
+    // Compute the maximum number of args across all Call instructions so we can
+    // allocate a scratch window past all VLocal registers.
+    let max_call_args: u16 = f
+        .blocks
+        .iter()
+        .flat_map(|b| &b.instrs)
+        .filter_map(|instr| {
+            if let MInstr::Call { args, .. } = instr { Some(args.len() as u16) } else { None }
+        })
+        .max()
+        .unwrap_or(0);
+
+    // scratch_base is the first register beyond all VLocal registers.
+    // The scratch window occupies scratch_base (callee) + scratch_base+1..N (args).
+    let scratch_base: u16 = rm.num_regs();
+    let final_num_regs: u16 = if max_call_args > 0 || f.blocks.iter().flat_map(|b| &b.instrs).any(|i| matches!(i, MInstr::Call { .. })) {
+        scratch_base + 1 + max_call_args
+    } else {
+        rm.num_regs()
+    };
+
     for (idx, block) in f.blocks.iter().enumerate() {
         label_positions.push((label_of(block.id), instrs.len() as u32));
 
         for instr in &block.instrs {
-            lower_instr(instr, &rm, &mut instrs);
+            lower_instr(instr, &rm, scratch_base, &mut instrs);
         }
 
         let next_block = f.blocks.get(idx + 1).map(|b| b.id);
@@ -38,7 +59,7 @@ fn lower_function(f: &MirFunction) -> Result<LirFunction, LirError> {
     Ok(LirFunction {
         id: ProtoId(f.id.0 as u16),
         num_params: f.params.len() as u16,
-        num_regs: rm.num_regs(),
+        num_regs: final_num_regs,
         consts: f.consts.clone(),
         instrs,
         label_positions,
@@ -54,7 +75,7 @@ fn val_to_reg(v: MValue, rm: &RegMap) -> Reg {
     }
 }
 
-fn lower_instr(instr: &MInstr, rm: &RegMap, out: &mut Vec<LirInstr>) {
+fn lower_instr(instr: &MInstr, rm: &RegMap, scratch_base: u16, out: &mut Vec<LirInstr>) {
     match instr {
         MInstr::LoadConst { dst, src } => {
             out.push(LirInstr {
@@ -117,11 +138,21 @@ fn lower_instr(instr: &MInstr, rm: &RegMap, out: &mut Vec<LirInstr>) {
             });
         }
         MInstr::Call { dst, callee, args } => {
-            let callee_r = val_to_reg(*callee, rm);
+            let callee_src = val_to_reg(*callee, rm);
             let n = args.len() as u16;
+            // Move callee into the scratch window (scratch_base), unless it's
+            // already there (won't happen since scratch_base >= rm.num_regs()).
+            let scratch_callee = Reg(scratch_base);
+            if scratch_callee != callee_src {
+                out.push(LirInstr {
+                    op: OpKind::Move,
+                    operands: vec![Operand::Reg(scratch_callee), Operand::Reg(callee_src)],
+                });
+            }
+            // Move each arg into scratch_base + 1 + i, past all live VLocals.
             for (i, a) in args.iter().enumerate() {
                 let src = val_to_reg(*a, rm);
-                let target = Reg(callee_r.0 + 1 + i as u16);
+                let target = Reg(scratch_base + 1 + i as u16);
                 if target != src {
                     out.push(LirInstr {
                         op: OpKind::Move,
@@ -137,7 +168,7 @@ fn lower_instr(instr: &MInstr, rm: &RegMap, out: &mut Vec<LirInstr>) {
                 op: OpKind::Call,
                 operands: vec![
                     Operand::Reg(dst_reg),
-                    Operand::Reg(callee_r),
+                    Operand::Reg(scratch_callee),
                     Operand::SmallInt(n as i16),
                 ],
             });
@@ -274,5 +305,24 @@ mod tests {
         assert!(ops.contains(&OpKind::SetGlobal));
         assert!(p.functions.len() == 2);
         assert!(matches!(p.functions[1].instrs.last(), Some(LirInstr { op: OpKind::Return, .. })));
+    }
+
+    #[test]
+    fn call_through_local_ref_does_not_clobber_locals() {
+        let src = r#"
+function add(a, b) return a + b end
+local fn_ref = add
+local x = 5
+local y = 3
+local r = fn_ref(y, x)
+print(r)
+print(x)
+print(y)
+"#;
+        let p = lir_of(src);
+        let main = &p.functions[0];
+        // The function's num_regs must exceed the highest VLocal register
+        // used for locals (fn_ref, x, y), because scratch goes beyond.
+        assert!(main.num_regs > 3, "expected scratch zone past locals, got num_regs={}", main.num_regs);
     }
 }
