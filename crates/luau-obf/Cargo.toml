@@ -1,0 +1,17 @@
+[package]
+name = "luau-obf"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+luau-parse = { path = "../luau-parse" }
+luau-hir = { path = "../luau-hir" }
+luau-mir = { path = "../luau-mir" }
+luau-passes = { path = "../luau-passes" }
+luau-lir = { path = "../luau-lir" }
+luau-emit = { path = "../luau-emit" }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+thiserror = { workspace = true }
