@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/luau-parse",
+    "crates/luau-hir",
+    "crates/luau-mir",
+    "crates/luau-passes",
+    "crates/luau-lir",
+    "crates/luau-emit",
+    "crates/luau-runtime",
+    "crates/luau-obf",
+    "crates/luau-obf-cli",
+    "runtime-tests",
+]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.78"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+full_moon = { version = "1.1", features = ["luau"] }
+thiserror = "1"
+minijinja = "2"
+rand = "0.8"
+rand_chacha = "0.3"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+insta = { version = "1", features = ["yaml"] }
+assert_cmd = "2"
+tempfile = "3"
