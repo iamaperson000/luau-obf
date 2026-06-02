@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>luau-obf — try it</title>
+  <style>
+    :root {
+      --ink: #1a1b26;
+      --bg:  #fafaf7;
+      --card:#ffffff;
+      --muted:#6b7280;
+      --accent:#c84b31;
+      --grid:#e5e7eb;
+      --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+      --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      --serif: ui-serif, Georgia, "Times New Roman", serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin:0; padding:0; background: var(--bg); color: var(--ink); font-family: var(--sans); }
+    body { min-height: 100vh; padding: 32px 24px 64px; }
+    .wrap { max-width: 1280px; margin: 0 auto; }
+    header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 6px; }
+    header h1 { font-family: var(--serif); font-weight: 700; font-size: 28px; margin: 0; }
+    header .tag { font-family: var(--mono); font-size: 12px; color: var(--accent); letter-spacing: 0.04em; }
+    header p { font-style: italic; color: var(--muted); margin: 0 0 24px; font-size: 14px; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+      align-items: stretch;
+    }
+    @media (max-width: 800px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--ink);
+      border-radius: 8px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      min-height: 480px;
+    }
+    .card header.bar {
+      background: var(--ink);
+      color: var(--bg);
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-family: var(--mono);
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .card header.bar .stats { color: #c9cbd8; font-style: italic; font-weight: 400; font-size: 11px; }
+    textarea {
+      flex: 1;
+      width: 100%;
+      border: 0;
+      outline: 0;
+      padding: 14px;
+      font-family: var(--mono);
+      font-size: 13px;
+      line-height: 1.5;
+      resize: vertical;
+      min-height: 420px;
+      background: var(--card);
+      color: var(--ink);
+    }
+    textarea[readonly] { background: #fafafa; color: #3d4252; }
+
+    .controls {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin: 20px 0 18px;
+    }
+    button {
+      background: var(--ink);
+      color: var(--bg);
+      border: 0;
+      padding: 10px 20px;
+      font-family: var(--mono);
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+    button:hover { background: var(--accent); }
+    button:disabled { background: #9ca3af; cursor: not-allowed; }
+    button.secondary { background: transparent; color: var(--ink); border: 1px solid var(--ink); }
+    button.secondary:hover { background: var(--ink); color: var(--bg); }
+
+    .seed-input {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .seed-input input {
+      width: 280px;
+      padding: 8px 10px;
+      font-family: var(--mono);
+      font-size: 11px;
+      border: 1px solid var(--grid);
+      border-radius: 4px;
+      background: var(--card);
+      color: var(--ink);
+    }
+    .seed-input input:focus { outline: none; border-color: var(--ink); }
+
+    .status {
+      margin-left: auto;
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .status.error { color: var(--accent); }
+    .status.ok { color: #047857; }
+
+    .examples {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .examples span { padding-right: 4px; align-self: center; font-style: italic; }
+    .example-btn {
+      background: transparent;
+      border: 1px dashed var(--grid);
+      color: var(--ink);
+      padding: 4px 10px;
+      font-family: var(--mono);
+      font-size: 11px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .example-btn:hover { border-color: var(--ink); background: var(--card); }
+
+    footer {
+      margin-top: 28px;
+      color: var(--muted);
+      font-size: 12px;
+      font-family: var(--sans);
+      font-style: italic;
+      display: flex;
+      justify-content: space-between;
+    }
+    footer a { color: var(--accent); text-decoration: none; }
+
+    .error-pane {
+      background: #fff5f4;
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      padding: 10px 14px;
+      font-family: var(--mono);
+      font-size: 12px;
+      border-radius: 6px;
+      margin-bottom: 14px;
+      white-space: pre-wrap;
+      display: none;
+    }
+    .error-pane.shown { display: block; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>luau-obf <span style="font-family: var(--mono); font-size: 13px; color: var(--muted); font-weight: 400;">— try it</span></h1>
+      <span class="tag">PLAN 3 · CLOSURES WITH UPVALUES</span>
+    </header>
+    <p>Paste Luau source on the left, hit obfuscate, watch the VM-wrapped chunk appear on the right. The output runs identically to the input under the <code>luau</code> CLI.</p>
+
+    <div class="examples">
+      <span>load example:</span>
+      <button class="example-btn" data-example="hello">hello</button>
+      <button class="example-btn" data-example="factorial">factorial</button>
+      <button class="example-btn" data-example="counter">counter (closures)</button>
+      <button class="example-btn" data-example="point">point (methods)</button>
+    </div>
+
+    <div id="errorPane" class="error-pane"></div>
+
+    <div class="grid">
+      <div class="card">
+        <header class="bar">
+          <span>input.luau</span>
+          <span class="stats" id="inputStats">0 lines · 0 bytes</span>
+        </header>
+        <textarea id="src" spellcheck="false" placeholder="-- paste Luau here&#10;print(&quot;hello, world&quot;)"></textarea>
+      </div>
+      <div class="card">
+        <header class="bar">
+          <span>obfuscated.luau</span>
+          <span class="stats" id="outputStats">—</span>
+        </header>
+        <textarea id="out" spellcheck="false" readonly placeholder="output appears here"></textarea>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button id="goBtn">Obfuscate</button>
+      <button class="secondary" id="copyBtn">Copy output</button>
+      <button class="secondary" id="downloadBtn">Download .luau</button>
+      <div class="seed-input">
+        <label for="seed">seed (hex, optional):</label>
+        <input id="seed" type="text" placeholder="64 hex chars · random if blank" maxlength="64">
+      </div>
+      <span id="status" class="status"></span>
+    </div>
+
+    <footer>
+      <span>luau-obf · scaffolding stage, no obfuscation passes yet — output is a VM-wrapped equivalent of your input</span>
+      <span>POST <code>/api/obfuscate</code> { source, seed_hex? }</span>
+    </footer>
+  </div>
+
+  <script>
+    const examples = {
+      hello: `print("hello, world")\nprint(1 + 2)\n`,
+      factorial: `function factorial(n)\n    if n <= 1 then return 1 end\n    return n * factorial(n - 1)\nend\nprint(factorial(6))\n`,
+      counter: `local function make_counter()\n    local n = 0\n    local function inc()\n        n = n + 1\n        return n\n    end\n    return inc\nend\n\nlocal c1 = make_counter()\nlocal c2 = make_counter()\nprint(c1())\nprint(c1())\nprint(c2())\nprint(c1())\n`,
+      point: `local point = {x = 1, y = 2}\nfunction point:magnitude()\n    return self.x * self.x + self.y * self.y\nend\nfunction point:scale(k)\n    self.x = self.x * k\n    self.y = self.y * k\nend\nprint(point:magnitude())\npoint:scale(3)\nprint(point:magnitude())\n`,
+    };
+
+    const $ = (id) => document.getElementById(id);
+    const src = $('src');
+    const out = $('out');
+    const errorPane = $('errorPane');
+    const status = $('status');
+
+    function updateStats(el, txt, target) {
+      const lines = txt ? txt.split('\n').length : 0;
+      const bytes = new TextEncoder().encode(txt).length;
+      const human = bytes < 1024 ? `${bytes} bytes` : `${(bytes/1024).toFixed(1)} KB`;
+      target.textContent = `${lines} lines · ${human}`;
+    }
+
+    src.addEventListener('input', () => updateStats(src, src.value, $('inputStats')));
+
+    function setStatus(msg, kind) {
+      status.textContent = msg;
+      status.className = 'status' + (kind ? ' ' + kind : '');
+    }
+
+    function showError(msg) {
+      errorPane.textContent = msg;
+      errorPane.classList.add('shown');
+    }
+    function clearError() {
+      errorPane.textContent = '';
+      errorPane.classList.remove('shown');
+    }
+
+    document.querySelectorAll('.example-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        src.value = examples[btn.dataset.example];
+        src.dispatchEvent(new Event('input'));
+        out.value = '';
+        $('outputStats').textContent = '—';
+        clearError();
+        setStatus('');
+      });
+    });
+
+    $('goBtn').addEventListener('click', async () => {
+      clearError();
+      setStatus('compiling…');
+      $('goBtn').disabled = true;
+      const seedRaw = $('seed').value.trim();
+      try {
+        const res = await fetch('/api/obfuscate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source: src.value, seed_hex: seedRaw || null }),
+        });
+        const body = await res.json();
+        if (body.ok) {
+          out.value = body.output;
+          updateStats(out, out.value, $('outputStats'));
+          const ratio = out.value.length / Math.max(1, src.value.length);
+          setStatus(`ok · ×${ratio.toFixed(1)} size · seed ${body.seed_used.slice(0, 8)}…`, 'ok');
+        } else {
+          out.value = '';
+          $('outputStats').textContent = '—';
+          showError(body.error || 'unknown error');
+          setStatus('failed', 'error');
+        }
+      } catch (e) {
+        showError(String(e));
+        setStatus('network error', 'error');
+      } finally {
+        $('goBtn').disabled = false;
+      }
+    });
+
+    async function copyText(text) {
+      // Modern Clipboard API: only works in secure contexts (HTTPS or localhost).
+      if (navigator.clipboard && window.isSecureContext) {
+        try {
+          await navigator.clipboard.writeText(text);
+          return true;
+        } catch (_) { /* fall through */ }
+      }
+      // Fallback for plain-HTTP LAN access: detached textarea + execCommand.
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.top = '0';
+      ta.style.left = '0';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      const prevSel = document.activeElement;
+      ta.focus();
+      ta.select();
+      ta.setSelectionRange(0, text.length);
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch (_) { /* nothing */ }
+      document.body.removeChild(ta);
+      if (prevSel && typeof prevSel.focus === 'function') prevSel.focus();
+      return ok;
+    }
+
+    $('copyBtn').addEventListener('click', async () => {
+      const text = out.value;
+      if (!text) return;
+      const ok = await copyText(text);
+      if (ok) {
+        const bytes = new TextEncoder().encode(text).length;
+        const human = bytes < 1024 ? `${bytes} bytes` : `${(bytes/1024).toFixed(1)} KB`;
+        setStatus(`copied ${human}`, 'ok');
+      } else {
+        out.focus();
+        out.select();
+        setStatus('copy failed — press Cmd/Ctrl+C to copy selection', 'error');
+      }
+    });
+
+    $('downloadBtn').addEventListener('click', () => {
+      if (!out.value) return;
+      const blob = new Blob([out.value], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'obfuscated.luau';
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    // Preload hello
+    src.value = examples.hello;
+    src.dispatchEvent(new Event('input'));
+  </script>
+</body>
+</html>

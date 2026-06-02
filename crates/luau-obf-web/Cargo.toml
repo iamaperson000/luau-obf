@@ -1,0 +1,13 @@
+[package]
+name = "luau-obf-web"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+luau-obf = { path = "../luau-obf" }
+axum = "0.7"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+serde = { workspace = true }
+serde_json = { workspace = true }

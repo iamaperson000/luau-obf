@@ -10,6 +10,7 @@ members = [
     "crates/luau-runtime",
     "crates/luau-obf",
     "crates/luau-obf-cli",
+    "crates/luau-obf-web",
     "runtime-tests",
 ]
 
