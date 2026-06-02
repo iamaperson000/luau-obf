@@ -1,0 +1,19 @@
+[package]
+name = "luau-obf-wasm"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+luau-obf = { path = "../luau-obf" }
+wasm-bindgen = "0.2"
+serde = { workspace = true }
+serde-wasm-bindgen = "0.6"
+# Needed so `rand::thread_rng()` (used by luau-obf for random seed generation)
+# can find an entropy source in the browser via `crypto.getRandomValues`.
+getrandom = { version = "0.2", features = ["js"] }

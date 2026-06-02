@@ -3,3 +3,12 @@
 Cargo.lock.bak
 .DS_Store
 **/.DS_Store
+
+# WASM build artifacts — produced by `wasm-pack build` (or CI). Source of
+# truth is `crates/luau-obf-wasm`. Pages CI rebuilds these on every push.
+/web/pkg
+
+# Local build-redirect dirs used when system disk is tight.
+/.tmp
+/.cargo-home
+/.wasm-pack-cache
