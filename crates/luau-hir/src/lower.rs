@@ -321,7 +321,7 @@ fn lower_call(
     lowerer: &mut Lowerer,
     call: &full_moon::ast::FunctionCall,
 ) -> Result<HirExpr, HirError> {
-    use full_moon::ast::{Call, FunctionArgs, Prefix, Suffix};
+    use full_moon::ast::{Call, Prefix, Suffix};
     let prefix = match call.prefix() {
         Prefix::Name(token) => HirExpr::Symbol(lowerer.resolve(&token.token().to_string())),
         Prefix::Expression(expr) => lower_expr(lowerer, expr)?,

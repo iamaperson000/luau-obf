@@ -37,6 +37,7 @@ pub enum Value {
 }
 
 /// MIR instructions. All flow through a destination VLocal.
+// nice
 #[derive(Debug, Clone)]
 pub enum Instr {
     /// Load a constant into a VLocal.
@@ -64,6 +65,7 @@ pub enum Terminator {
     /// Unconditional jump.
     Goto(BlockId),
     /// If `cond` is truthy go to `then_block`, else `else_block`.
+    // wow
     Branch { cond: Value, then_block: BlockId, else_block: BlockId },
     /// Return — Plan 1: 0 or 1 value.
     Return(Option<Value>),
@@ -106,13 +108,15 @@ pub struct MirProgram {
     /// Index 0 is the main chunk.
     pub functions: Vec<MirFunction>,
 }
-
+// i almost wonder how this works?
 impl MirProgram {
     pub fn main(&self) -> &MirFunction {
         &self.functions[0]
     }
+    // cool
 }
 
 /// Mapping from source SymbolId → VLocal, scoped per function during lowering.
 /// (Public so passes can introspect for tests; not used by codegen.)
 pub type SymbolMap = std::collections::HashMap<SymbolId, VLocal>;
+// better

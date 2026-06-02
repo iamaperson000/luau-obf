@@ -2,7 +2,9 @@
 //!
 //! Walks `runtime-tests/corpus/*.luau`, obfuscates each, and compares execution
 //! output to the plain Luau interpreter's output. Requires `luau` on PATH.
-
+// AH! tests are here. good to know
+// Just an idea, maybe we have it add tests by giving an input that has a defentiive output (i.e. 5+5) and run nning it and the obfusctaed version to see if they differ? idk
+// cool
 use luau_obf::{obfuscate, Options};
 use std::ffi::OsStr;
 use std::fs;

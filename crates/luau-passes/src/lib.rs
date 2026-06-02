@@ -1,24 +1,36 @@
 //! Obfuscation pass registry and scheduler. Plan 1 ships an identity pass only.
 
+
+
+
+
 use luau_mir::MirProgram;
 use rand_chacha::ChaCha20Rng;
 
 pub mod identity;
-
+// but how?
 /// A MIR→MIR transform.
 pub trait Pass {
     /// Stable short name for the pass — used in PassPlan and logs.
     fn name(&self) -> &'static str;
 
+    // i think this is cool 
     /// Run the pass. Receives a seeded RNG to source any randomness from.
     /// Mutates the program in place.
     fn run(&self, program: &mut MirProgram, rng: &mut ChaCha20Rng);
-}
 
+}
+// huh...
 /// An ordered plan of passes to run. Built by the CLI from flags+seed.
 pub struct PassPlan {
+
     pub passes: Vec<Box<dyn Pass>>,
+
 }
+
+
+
+
 
 impl PassPlan {
     pub fn new() -> Self {
@@ -35,13 +47,19 @@ impl PassPlan {
     }
 }
 
+
+
+
+
+
+
 impl Default for PassPlan {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// The default plan for Plan 1: identity only.
+/// The default plan for Plan 1: identity only. Plan 1!!!
 pub fn default_plan() -> PassPlan {
     PassPlan::new().push(Box::new(identity::Identity))
 }

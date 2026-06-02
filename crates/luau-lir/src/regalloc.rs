@@ -9,6 +9,12 @@ pub struct RegMap {
     next: u16,
 }
 
+impl Default for RegMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RegMap {
     pub fn new() -> Self {
         Self { map: HashMap::new(), next: 0 }

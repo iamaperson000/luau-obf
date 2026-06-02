@@ -14,8 +14,8 @@ impl OpMap {
     /// Build a fresh map. `_seed` is the entropy source for Plan 3; ignored here.
     pub fn new(_seed: &[u8; 32]) -> Self {
         let mut forward = [0u8; 26];
-        for i in 0..26 {
-            forward[i] = (i + 1) as u8;
+        for (i, slot) in forward.iter_mut().enumerate() {
+            *slot = (i + 1) as u8;
         }
         OpMap { forward }
     }

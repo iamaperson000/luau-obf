@@ -5,11 +5,11 @@ use crate::{
     SymbolMap, Terminator, VLocal, Value,
 };
 use luau_hir::{
-    BinOp, HirExpr, HirFunction, HirLiteral, HirProgram, HirStmt, Symbol, SymbolId, SymbolKind,
+    BinOp, HirExpr, HirFunction, HirLiteral, HirProgram, Symbol, SymbolId, SymbolKind,
 };
 
 pub(crate) struct FnBuilder<'a> {
-    pub(crate) id: FunctionId,
+    pub(crate) _id: FunctionId,
     pub(crate) next_local: u32,
     pub(crate) blocks: Vec<BasicBlock>,
     pub(crate) next_block: u32,
@@ -32,7 +32,7 @@ impl<'a> FnBuilder<'a> {
         next_function: &'a mut u32,
     ) -> Self {
         Self {
-            id,
+            _id: id,
             next_local: 0,
             blocks: Vec::new(),
             next_block: 0,

@@ -1,4 +1,5 @@
 //! HIR statement → MIR lowering. Handles control flow desugaring.
+// Just a comment. Ignore meee!!!
 
 use crate::{
     lower::FnBuilder, Constant, Instr, MirError, Terminator, Value,

@@ -4,16 +4,10 @@ use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use thiserror::Error;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Options {
     /// 32-byte seed. If None, a random seed is generated and surfaced via `seed_used`.
     pub seed: Option<[u8; 32]>,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Self { seed: None }
-    }
 }
 
 #[derive(Debug, Error)]
