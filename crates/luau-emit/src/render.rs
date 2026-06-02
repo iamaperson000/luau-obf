@@ -122,16 +122,26 @@ fn escape_luau_string(s: &str) -> String {
 }
 
 fn encode_luau_string_literal(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
+    // Use zero-padded 3-digit decimal escapes (\NNN) for every byte that is not
+    // safe printable ASCII.  Three digits is Luau's maximum for numeric string
+    // escapes, so the next character can *never* be consumed as part of this
+    // escape.  This avoids the subtle bug where the unpadded form (e.g. `\14`)
+    // followed by a printable digit (e.g. `0`) would be mis-parsed by Luau as a
+    // single 3-digit escape `\140` (byte 140) instead of byte 14 + character '0'.
+    let mut out = String::with_capacity(bytes.len() * 4);
     for &b in bytes {
         match b {
             b'\\' => out.push_str("\\\\"),
-            b'"' => out.push_str("\\\""),
+            b'"'  => out.push_str("\\\""),
             b'\n' => out.push_str("\\n"),
             b'\r' => out.push_str("\\r"),
             b'\t' => out.push_str("\\t"),
+            // Safe printable ASCII (not a special character above).
+            // These are never confused with a preceding \NNN escape because
+            // \NNN is 3 digits — the maximum — leaving no room for extension.
             0x20..=0x7E => out.push(b as char),
-            _ => out.push_str(&format!("\\{}", b)),
+            // All other bytes: zero-padded 3-digit decimal.
+            _ => out.push_str(&format!("\\{:03}", b)),
         }
     }
     out
