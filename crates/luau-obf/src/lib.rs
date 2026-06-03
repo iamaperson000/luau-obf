@@ -127,6 +127,40 @@ mod tests {
     }
 
     #[test]
+    fn output_does_not_contain_op_constant_names() {
+        let r = obfuscate("print(1 + 2)", Options { seed: Some([77u8; 32]) }).unwrap();
+        // None of the OP_X names should survive mangling.
+        for name in &["OP_LoadConst", "OP_LoadNil", "OP_Add", "OP_GetGlobal", "OP_Call", "OP_Return"] {
+            assert!(!r.output.contains(name), "found {} in output", name);
+        }
+    }
+
+    #[test]
+    fn output_does_not_contain_vm_helper_names() {
+        let r = obfuscate("print(1)", Options { seed: Some([88u8; 32]) }).unwrap();
+        for name in &["vm_call", "read_u16", "read_i16", "_decrypt", "_KA", "_KB"] {
+            assert!(!r.output.contains(name), "found {} in output", name);
+        }
+    }
+
+    #[test]
+    fn output_does_not_contain_handler_comments() {
+        let r = obfuscate("print(1)", Options { seed: Some([99u8; 32]) }).unwrap();
+        // Banner / annotation comments from the template MUST NOT survive.
+        for snippet in &[
+            "Proto metadata",
+            "Bootstrap",
+            "Rust-side",
+            "luau-obf runtime",
+            "do not edit",
+            "Skip the closure_idx",
+        ] {
+            assert!(!r.output.contains(snippet),
+                "found comment fragment {:?} in output", snippet);
+        }
+    }
+
+    #[test]
     fn identical_plaintext_encrypts_differently_across_protos() {
         // The bank-style program defines "deposit" / "withdraw" as field names
         // that recur in multiple protos. After per-proto salt, the ciphertexts
