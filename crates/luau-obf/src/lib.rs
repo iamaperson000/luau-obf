@@ -1135,6 +1135,28 @@ mod tests {
     }
 
     #[test]
+    fn junk_live_operand_preserves_semantics() {
+        let src = "
+            local function pow2(n)
+                local r = 1
+                for _ = 1, n do r = r * 2 end
+                return r
+            end
+            print(pow2(10))
+        "; // expect 1024
+        for seed_byte in [13u8, 73, 137, 211] {
+            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]) }).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("obf.luau");
+            std::fs::write(&path, &r.output).unwrap();
+            let out = std::process::Command::new("luau").arg(&path).output().unwrap();
+            assert!(out.status.success(), "seed {}: luau failed: {}", seed_byte, String::from_utf8_lossy(&out.stderr));
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(stdout.contains("1024"), "seed {}: got {:?}", seed_byte, stdout);
+        }
+    }
+
+    #[test]
     fn junk_sub_preserves_semantics() {
         let src = "
             local function pow2(n)
