@@ -2,11 +2,10 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 4 — multi-return, varargs, generic-for. The obfuscator round-trips
-an expanded Luau subset (Plan 3 features + multi-value `return a, b`, multi-bind
-`local a, b = f()`, varargs `...` parameters and spread, `for k, v in pairs(t)`
-and other generic-for iterators) through a custom VM with no obfuscation passes
-yet.
+**Status:** Plan 5 — `continue`, compound assignment, and backtick string
+interpolation. The obfuscator round-trips an expanded Luau subset (Plan 4
+features + `continue` in every loop kind, `+=`/`-=`/`*=`/`/=`/`%=`/`^=`/`..=`,
+and `` `hello {expr}` ``) through a custom VM with no obfuscation passes yet.
 
 ## Build
 
