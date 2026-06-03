@@ -134,6 +134,33 @@ fn escape_luau_string(s: &str) -> String {
     out
 }
 
+pub(crate) fn derive_string_keys(rng: &mut ChaCha20Rng) -> ([u8; 32], [u8; 32]) {
+    use rand::RngCore;
+    let mut a = [0u8; 32];
+    let mut b = [0u8; 32];
+    rng.fill_bytes(&mut a);
+    rng.fill_bytes(&mut b);
+    (a, b)
+}
+
+pub(crate) fn encrypt_string(plaintext: &str, key_a: &[u8; 32], key_b: &[u8; 32]) -> Vec<u8> {
+    let bytes = plaintext.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    for (i, b) in bytes.iter().enumerate() {
+        let ka = key_a[i % 32];
+        let kb = key_b[i % 32];
+        let pos = (i & 0xFF) as u8;
+        // Round 1: XOR with key_a. Round 2: XOR with position. Round 3: XOR with key_b.
+        out.push(b ^ ka ^ pos ^ kb);
+    }
+    out
+}
+
+pub(crate) fn format_byte_array_literal(bytes: &[u8]) -> String {
+    let parts: Vec<String> = bytes.iter().map(|b| b.to_string()).collect();
+    parts.join(", ")
+}
+
 fn encode_luau_string_literal(bytes: &[u8]) -> String {
     // Use zero-padded 3-digit decimal escapes (\NNN) for every byte that is not
     // safe printable ASCII.  Three digits is Luau's maximum for numeric string
@@ -158,4 +185,39 @@ fn encode_luau_string_literal(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encrypt_decrypt_round_trips() {
+        let key_a = [42u8; 32];
+        let key_b = [99u8; 32];
+        let plaintext = "print";
+        let enc = encrypt_string(plaintext, &key_a, &key_b);
+        // Decrypt by re-applying the same XOR chain.
+        let dec: Vec<u8> = enc.iter().enumerate().map(|(i, b)| {
+            let ka = key_a[i % 32];
+            let kb = key_b[i % 32];
+            let pos = (i & 0xFF) as u8;
+            b ^ ka ^ pos ^ kb
+        }).collect();
+        assert_eq!(dec, plaintext.as_bytes());
+    }
+
+    #[test]
+    fn encrypt_changes_bytes_for_typical_input() {
+        let key_a = [1u8; 32];
+        let key_b = [2u8; 32];
+        let enc = encrypt_string("hello world", &key_a, &key_b);
+        assert_ne!(enc, b"hello world");
+    }
+
+    #[test]
+    fn empty_string_encrypts_to_empty() {
+        let enc = encrypt_string("", &[0u8; 32], &[0u8; 32]);
+        assert!(enc.is_empty());
+    }
 }
