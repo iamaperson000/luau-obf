@@ -3,6 +3,7 @@
 pub mod opmap;
 pub mod encode;
 pub mod render;
+pub mod mangle;
 
 use luau_lir::LirProgram;
 use rand_chacha::ChaCha20Rng;
