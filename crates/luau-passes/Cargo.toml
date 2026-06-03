@@ -7,9 +7,9 @@ license.workspace = true
 
 [dependencies]
 luau-mir = { path = "../luau-mir" }
+luau-hir = { path = "../luau-hir" }
 rand_chacha = { workspace = true }
 rand = { workspace = true }
 
 [dev-dependencies]
-luau-hir = { path = "../luau-hir" }
 luau-parse = { path = "../luau-parse" }

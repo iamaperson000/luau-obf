@@ -8,6 +8,7 @@ use luau_mir::MirProgram;
 use rand_chacha::ChaCha20Rng;
 
 pub mod identity;
+pub mod expr_mangle;
 // but how?
 /// A MIR→MIR transform.
 pub trait Pass {
@@ -59,7 +60,9 @@ impl Default for PassPlan {
     }
 }
 
-/// The default plan for Plan 1: identity only. Plan 1!!!
+/// The default plan: identity then expression mangling (Plan 15).
 pub fn default_plan() -> PassPlan {
-    PassPlan::new().push(Box::new(identity::Identity))
+    PassPlan::new()
+        .push(Box::new(identity::Identity))
+        .push(Box::new(expr_mangle::ExpressionMangle))
 }
