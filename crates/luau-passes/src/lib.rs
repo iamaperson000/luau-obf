@@ -15,6 +15,7 @@ pub mod add_padding;
 pub mod mul_padding;
 pub mod branch_polarity;
 pub mod opaque_predicate;
+pub mod junk_arith;
 // but how?
 /// A MIR→MIR transform.
 pub trait Pass {
@@ -73,6 +74,7 @@ pub fn default_plan() -> PassPlan {
         .push(Box::new(const_decompose::ConstantDecompose))
         .push(Box::new(expr_mangle::ExpressionMangle))
         .push(Box::new(opaque_predicate::OpaqueTruePredicate))
+        .push(Box::new(junk_arith::JunkArithmetic))
         .push(Box::new(add_padding::AddIdentityPadding))
         .push(Box::new(mul_padding::MulOperandScatter))
         .push(Box::new(branch_polarity::BranchPolarityFlip))
