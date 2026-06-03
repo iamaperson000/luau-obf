@@ -261,6 +261,24 @@ fn lower_stmt(
             lowerer.pop_scope();
             Ok(vec![HirStmt::NumericFor { var, start, stop, step, body }])
         }
+        Stmt::GenericFor(gf) => {
+            let exprs_iter: Vec<&full_moon::ast::Expression> = gf.expressions().iter().collect();
+            let lowered_exprs: Vec<HirExpr> = exprs_iter.iter()
+                .map(|e| lower_expr(lowerer, e))
+                .collect::<Result<_, _>>()?;
+            lowerer.push_scope();
+            let names: Vec<&full_moon::tokenizer::TokenReference> = gf.names().iter().collect();
+            let vars: Vec<SymbolId> = names.iter()
+                .map(|t| lowerer.declare_local(&t.token().to_string()))
+                .collect();
+            let body = lower_block(lowerer, gf.block())?;
+            lowerer.pop_scope();
+            Ok(vec![HirStmt::GenericFor {
+                vars,
+                exprs: lowered_exprs,
+                body,
+            }])
+        }
         Stmt::FunctionDeclaration(fd) => lower_function_decl(lowerer, fd),
         Stmt::LocalFunction(lf) => {
             // Declare the local BEFORE lowering the body, so the body can recurse.
@@ -1282,5 +1300,32 @@ mod tests {
         assert!(f.is_vararg);
         let HirStmt::LocalDecl { value: inner, .. } = &f.body[0] else { panic!() };
         assert!(matches!(inner, HirExpr::Vararg));
+    }
+
+    #[test]
+    fn lowers_generic_for_two_vars() {
+        let p = lower_str("for k, v in pairs(t) do x = k end");
+        let HirStmt::GenericFor { vars, exprs, body } = &p.main[0] else {
+            panic!("expected GenericFor");
+        };
+        assert_eq!(vars.len(), 2);
+        assert_eq!(exprs.len(), 1);
+        assert!(matches!(exprs[0], HirExpr::Call { .. }));
+        assert_eq!(body.len(), 1);
+    }
+
+    #[test]
+    fn lowers_generic_for_single_var() {
+        let p = lower_str("for k in pairs(t) do x = k end");
+        let HirStmt::GenericFor { vars, .. } = &p.main[0] else { panic!() };
+        assert_eq!(vars.len(), 1);
+    }
+
+    #[test]
+    fn generic_for_vars_are_local_to_body() {
+        // The for-vars must not leak into the surrounding scope.
+        let p = lower_str("for k in pairs(t) do end k = 1");
+        // The second statement is a global assignment (k was scoped to the loop).
+        assert!(matches!(&p.main[1], HirStmt::Assign { .. }));
     }
 }
