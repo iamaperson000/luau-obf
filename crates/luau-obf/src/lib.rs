@@ -720,4 +720,38 @@ mod tests {
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(stdout.contains("42"), "expected 42 in output, got: {stdout}");
     }
+
+    #[test]
+    fn sub_heavy_program_produces_different_output_per_seed() {
+        // A program with several `-` operations. Different seeds should
+        // produce different rewrites, hence different output (variance
+        // beyond what opcode renumbering / keystream alone provides).
+        let src = "local x = 100 \
+                   x = x - 10 \
+                   x = x - 5 \
+                   x = x - 2 \
+                   print(x)";
+        let a = obfuscate(src, Options { seed: Some([10u8; 32]) }).unwrap();
+        let b = obfuscate(src, Options { seed: Some([20u8; 32]) }).unwrap();
+        let c = obfuscate(src, Options { seed: Some([30u8; 32]) }).unwrap();
+        // All three outputs must be distinct (variance preserved).
+        assert_ne!(a.output, b.output);
+        assert_ne!(b.output, c.output);
+        assert_ne!(a.output, c.output);
+    }
+
+    #[test]
+    fn sub_rewrite_preserves_runtime_semantics() {
+        // Just spot-check: an obfuscated `Sub` program produces the right
+        // arithmetic answer at runtime.
+        let src = "print(100 - 10 - 5 - 2)";  // 83
+        let r = obfuscate(src, Options { seed: Some([55u8; 32]) }).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("obf.luau");
+        std::fs::write(&path, &r.output).unwrap();
+        let out = std::process::Command::new("luau").arg(&path).output().unwrap();
+        assert!(out.status.success());
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("83"));
+    }
 }
