@@ -199,6 +199,25 @@ pub fn fold_key(base: &[u8; 32], bind: &[u8]) -> [u8; 32] {
     k
 }
 
+/// Compute the session token from the runtime key.
+///
+/// The token is mixed into the constant-pool cipher so that an attacker who
+/// dumps stage-1 plaintext cannot call `_decrypt` / `_const` externally
+/// without also recomputing `_stoken` from the runtime key.
+///
+/// Formula (mirrors the Luau code in `render_stage0`):
+///   sum_k = sum of all bytes in k (wrapping u32)
+///   token = sum_k * 16_777_619 (wrapping)
+///
+/// Depends only on `k`, not on any ciphertext or plaintext length, so the
+/// Rust side can compute the token before building the constant pool, avoiding
+/// any chicken-and-egg dependency.  The Luau side computes the same value
+/// after key derivation, before `_d(_s)`.
+pub fn session_token(k: &[u8; 32]) -> u32 {
+    let sum_k: u32 = k.iter().map(|&b| b as u32).fold(0u32, |a, b| a.wrapping_add(b));
+    sum_k.wrapping_mul(16_777_619)
+}
+
 /// Render the stage-0 bootstrap text given the encrypted payload + base key.
 ///
 /// The effective RC4 key is derived at runtime as:
@@ -206,6 +225,11 @@ pub fn fold_key(base: &[u8; 32], bind: &[u8]) -> [u8; 32] {
 /// which XORs the base with its own FNV fingerprint (and optionally a bound
 /// runtime value).  Caller is responsible for applying identifier mangling +
 /// comment stripping to the result if desired.
+///
+/// A session token (`_stoken`) is computed from `sum(_k) * FNV_PRIME + #_decoded`
+/// and passed as the FIRST argument to the loaded chunk so that stage-1's
+/// constant-pool cipher is keyed on a value only present during real stage-0
+/// execution.
 pub fn render_stage0(encrypted_payload: &[u8], base_key: &[u8; 32], binding: Option<&EmitEnvBinding>) -> String {
     let payload_lit = crate::render::encode_luau_string_literal(encrypted_payload);
     let key_lit = crate::render::encode_luau_string_literal(base_key);
@@ -222,7 +246,14 @@ local _k = (function(kbase, s_fp)
     return table.concat(out)
 end)(_kbase, _fnv_fp(_kbase))
 {decrypt_fn}
-return loadstring(_d(_s))(...)
+local _stoken = 0
+do
+    local sum_k = 0
+    for i = 1, #_k do sum_k = (sum_k + string.byte(_k, i)) % 4294967296 end
+    _stoken = (sum_k * 16777619) % 4294967296
+end
+local _decoded = _d(_s)
+return loadstring(_decoded)(_stoken, ...)
 "#,
                 payload = payload_lit,
                 key = key_lit,
@@ -240,7 +271,14 @@ local _bind = {runtime_expr}
 {mix_fn}
 local _k = _mix(_kbase, _fnv_fp(_kbase), _bind)
 {decrypt_fn}
-return loadstring(_d(_s))(...)
+local _stoken = 0
+do
+    local sum_k = 0
+    for i = 1, #_k do sum_k = (sum_k + string.byte(_k, i)) % 4294967296 end
+    _stoken = (sum_k * 16777619) % 4294967296
+end
+local _decoded = _d(_s)
+return loadstring(_decoded)(_stoken, ...)
 "#,
                 payload = payload_lit,
                 key = key_lit,
@@ -285,6 +323,8 @@ mod tests {
         assert!(text.contains("local _k"));
         assert!(text.contains("local _kbase"));
         assert!(text.contains("_fnv_fp"));
+        assert!(text.contains("_stoken"));
+        assert!(text.contains("_decoded"));
     }
 
     #[test]
@@ -451,8 +491,8 @@ print(table.concat(parts, " "))
         let stage0 = render_stage0(&ciphertext, &base, None);
         // Replace `return loadstring(...)` with `print(loadstring(...))` so we can see output.
         let luau = stage0.replace(
-            "return loadstring(_d(_s))(...)",
-            "print(loadstring(_d(_s))())",
+            "return loadstring(_decoded)(_stoken, ...)",
+            "print(loadstring(_decoded)())",
         );
 
         let dir = tempfile::tempdir().unwrap();
@@ -488,8 +528,8 @@ print(table.concat(parts, " "))
         };
         let stage0 = render_stage0(&ciphertext, &base, Some(&binding));
         let luau = stage0.replace(
-            "return loadstring(_d(_s))(...)",
-            "print(loadstring(_d(_s))())",
+            "return loadstring(_decoded)(_stoken, ...)",
+            "print(loadstring(_decoded)())",
         );
 
         let dir = tempfile::tempdir().unwrap();

@@ -1,6 +1,11 @@
 -- runtime
 -- Generated; do not edit by hand.
 
+-- Session token: passed as the first arg by stage-0; mixed into _decrypt's
+-- bs_seed so that constants cannot be recovered without knowing the token.
+-- Declared here (before _decrypt is defined) so it is captured as an upvalue.
+local _stoken = 0
+
 local _ENV_ = _ENV or getfenv(1)
 local _select = select
 local _error = error
@@ -92,7 +97,11 @@ end
 -- Plan 32 Task 2: _decrypt now accepts a bs_seed that is the byte-cipher's
 -- final LCG state after pre-decrypting the bytecode. Mixing it in means that
 -- recovering constants statically requires simulating the full bytecode LCG.
+-- Session-token mix (anti-dump): bs_seed is XORed with _stoken so that
+-- an attacker who patches loadstring(...)(...) to dump stage-1 source cannot
+-- call _decrypt externally without also deriving _stoken from the runtime key.
 local function _decrypt(enc, proto_id, bs_seed)
+    bs_seed = _xor(bs_seed, _stoken)
     local ka = _KAS[proto_id + 1]
     local kb = _KBS[proto_id + 1]
     local out = {}
@@ -559,6 +568,12 @@ end
 end
 
 -- Bootstrap: main proto is index 0; forward varargs.
-local main_args = { ... }
-local main_n = _select("#", ...)
-return vm_call(0, main_args, main_n, {})
+-- The first argument is the session token injected by stage-0; strip it before
+-- forwarding varargs to user code. If absent (e.g. in tests calling this chunk
+-- directly), _stoken stays 0 and _decrypt produces wrong output (defensive).
+local _tok_raw = _select(1, ...)
+if _tok_raw ~= nil then _stoken = _tok_raw end
+local _main_args = { _select(2, ...) }
+local _main_n = _select("#", ...) - 1
+if _main_n < 0 then _main_n = 0 end
+return vm_call(0, _main_args, _main_n, {})

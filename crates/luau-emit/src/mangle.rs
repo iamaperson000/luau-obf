@@ -158,8 +158,8 @@ pub const MANGLE_TARGETS: &[&str] = &[
     "n_values", "count",
     // _const helper locals (Plan 11/12).
     "raw", "tag", "len_lo", "len_hi",
-    // Bootstrap.
-    "main_args", "main_n",
+    // Bootstrap + session token.
+    "main_args", "main_n", "_stoken", "_main_args", "_main_n", "_tok_raw",
     // Misc inner-loop names.
     "sources", "src", "u", "idx", "out", "i", "j", "len", "cell",
     "t", "pos", "new", "value",
@@ -187,6 +187,8 @@ pub const STAGE0_MANGLE_TARGETS: &[&str] = &[
     "_kbase", "_bind", "_mix", "base", "bind", "bs", "k_idx",
     // Plan 32 Task 4: FNV fingerprint key derivation.
     "_fnv_fp", "fp", "h", "lo", "hi", "k", "s_fp", "kbase",
+    // Session token: stage-0 computes and passes to stage-1.
+    "_stoken", "_decoded", "sum_k",
 ];
 
 /// Build a deterministic stage-0 mangling map: same alphabet of three-letter

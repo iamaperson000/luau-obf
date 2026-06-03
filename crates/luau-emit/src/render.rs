@@ -83,6 +83,16 @@ pub fn render(
     // affects stage-1. Same seed -> same stage-0 key.
     let stage0_key = crate::stage0::derive_stage0_key(rng);
 
+    // Compute the runtime key and session token BEFORE building stage-1.
+    // The token depends only on the runtime key, so it is available during
+    // constant-pool encryption without any chicken-and-egg dependency.
+    let runtime_key = if let Some(b) = binding {
+        crate::stage0::derive_runtime_key(&stage0_key, Some(b.expected_value.as_str()))
+    } else {
+        crate::stage0::derive_runtime_key(&stage0_key, None)
+    };
+    let stoken = crate::stage0::session_token(&runtime_key);
+
     let stage1_source = {
         let opcodes: Vec<(String, u8)> = ALL_OPS
             .iter()
@@ -138,7 +148,7 @@ pub fn render(
             let crc_const = Constant::Number(crcs[i] as f64);
             let mut full_consts = vec![crc_const];
             full_consts.extend_from_slice(&f.consts);
-            consts.push(format_const_pool(&full_consts, ka, kb, i as u64, bs_finals[i], rng)?);
+            consts.push(format_const_pool(&full_consts, ka, kb, i as u64, bs_finals[i], stoken, rng)?);
         }
 
         let keys_a_lits: Vec<String> = per_proto_keys.iter().map(|(a, _)| format_byte_array_literal(a)).collect();
@@ -166,20 +176,13 @@ pub fn render(
     };
 
     // Plan 14 + Plan 32 Task 4: encrypt the stage-1 source and wrap it in a
-    // stage-0 bootstrap.  The effective RC4 key is derived as:
-    //   key = fnv_fingerprint(base) XOR base [XOR bind_fold if binding present]
-    // where `base` is the literal `_kbase` embedded in the wrapper.
-    // Hashing `base` (not the ciphertext) avoids the chicken-and-egg where
-    // key depends on ciphertext depends on key.
+    // stage-0 bootstrap.  The effective RC4 key was already derived above as
+    // `runtime_key` (before stage-1 was built, so the session token could be
+    // threaded into the constant cipher).
     let stage0_text = if let Some(b) = binding {
-        let runtime_key = crate::stage0::derive_runtime_key(
-            &stage0_key,
-            Some(b.expected_value.as_str()),
-        );
         let encrypted = crate::stage0::encrypt_payload(stage1_source.as_bytes(), &runtime_key);
         crate::stage0::render_stage0(&encrypted, &stage0_key, Some(b))
     } else {
-        let runtime_key = crate::stage0::derive_runtime_key(&stage0_key, None);
         let encrypted = crate::stage0::encrypt_payload(stage1_source.as_bytes(), &runtime_key);
         crate::stage0::render_stage0(&encrypted, &stage0_key, None)
     };
@@ -228,11 +231,12 @@ fn format_const_pool(
     key_b: &[u8; 32],
     proto_salt: u64,
     bs_seed: u32,
+    token: u32,
     rng: &mut ChaCha20Rng,
 ) -> Result<String, EmitError> {
     let mut parts = Vec::with_capacity(consts.len());
     for c in consts {
-        parts.push(format_const(c, key_a, key_b, proto_salt, bs_seed, rng)?);
+        parts.push(format_const(c, key_a, key_b, proto_salt, bs_seed, token, rng)?);
     }
     Ok(parts.join(", "))
 }
@@ -243,6 +247,7 @@ fn format_const(
     key_b: &[u8; 32],
     proto_salt: u64,
     bs_seed: u32,
+    token: u32,
     rng: &mut ChaCha20Rng,
 ) -> Result<String, EmitError> {
     // Plan 12: every constant is built into a uniform BLOB_SIZE-byte blob
@@ -250,7 +255,7 @@ fn format_const(
     // then XOR-encrypted. The wrapper call site is `_cw("<bytes>")` — a
     // single argument, identical-looking regardless of constant type.
     let blob = build_constant_blob(c, rng)?;
-    let enc = encrypt_bytes(&blob, key_a, key_b, proto_salt, bs_seed);
+    let enc = encrypt_bytes(&blob, key_a, key_b, proto_salt, bs_seed, token);
     Ok(format!("_cw(\"{}\")", encode_luau_string_literal(&enc)))
 }
 
@@ -277,6 +282,11 @@ pub(crate) fn derive_per_proto_string_keys(
 /// means that static decryption of constants requires simulating the LCG
 /// through the entire encrypted bytecode first.
 ///
+/// `token` is the session token (see `stage0::session_token`). It is XORed
+/// into `bs_seed` before the first mix advance so that an attacker who dumps
+/// stage-1 plaintext cannot call `_decrypt` externally without knowing the
+/// token, which only stage-0 produces at runtime.
+///
 /// The `mix` advance step uses the SAME LCG constants (1_103_515_245, 12345)
 /// as the byte-cipher so the Luau side can reuse the same formula.
 pub(crate) fn encrypt_bytes(
@@ -285,9 +295,10 @@ pub(crate) fn encrypt_bytes(
     key_b: &[u8; 32],
     proto_salt: u64,
     bs_seed: u32,
+    token: u32,
 ) -> Vec<u8> {
     let mut out = Vec::with_capacity(plaintext.len());
-    let mut mix: u32 = bs_seed;
+    let mut mix: u32 = bs_seed ^ token;
     for (i, b) in plaintext.iter().enumerate() {
         let ka = key_a[i % 32];
         let kb = key_b[i % 32];
@@ -348,10 +359,11 @@ mod tests {
         let plaintext = b"print";
         let proto_salt = 3u64;
         let bs_seed: u32 = 0xABCD1234;
-        let enc = encrypt_bytes(plaintext, &key_a, &key_b, proto_salt, bs_seed);
-        // Decrypt by re-running the same mix sequence.
+        let token: u32 = 0;
+        let enc = encrypt_bytes(plaintext, &key_a, &key_b, proto_salt, bs_seed, token);
+        // Decrypt by re-running the same mix sequence (token XORed into initial mix).
         let mut dec = Vec::with_capacity(plaintext.len());
-        let mut mix: u32 = bs_seed;
+        let mut mix: u32 = bs_seed ^ token;
         for (i, b) in enc.iter().enumerate() {
             let ka = key_a[i % 32];
             let kb = key_b[i % 32];
@@ -373,13 +385,13 @@ mod tests {
     fn encrypt_changes_bytes_for_typical_input() {
         let key_a = [1u8; 32];
         let key_b = [2u8; 32];
-        let enc = encrypt_bytes(b"hello world", &key_a, &key_b, 0, 0);
+        let enc = encrypt_bytes(b"hello world", &key_a, &key_b, 0, 0, 0);
         assert_ne!(enc, b"hello world");
     }
 
     #[test]
     fn empty_string_encrypts_to_empty() {
-        let enc = encrypt_bytes(b"", &[0u8; 32], &[0u8; 32], 0, 0);
+        let enc = encrypt_bytes(b"", &[0u8; 32], &[0u8; 32], 0, 0, 0);
         assert!(enc.is_empty());
     }
 
@@ -387,8 +399,8 @@ mod tests {
     fn different_proto_salts_change_ciphertext() {
         let key_a = [3u8; 32];
         let key_b = [4u8; 32];
-        let e1 = encrypt_bytes(b"deposit", &key_a, &key_b, 1, 0);
-        let e2 = encrypt_bytes(b"deposit", &key_a, &key_b, 2, 0);
+        let e1 = encrypt_bytes(b"deposit", &key_a, &key_b, 1, 0, 0);
+        let e2 = encrypt_bytes(b"deposit", &key_a, &key_b, 2, 0, 0);
         assert_ne!(e1, e2);
     }
 
@@ -396,8 +408,8 @@ mod tests {
     fn different_bs_seeds_change_ciphertext() {
         let key_a = [5u8; 32];
         let key_b = [6u8; 32];
-        let e1 = encrypt_bytes(b"constant", &key_a, &key_b, 1, 0xDEADBEEF);
-        let e2 = encrypt_bytes(b"constant", &key_a, &key_b, 1, 0xCAFEBABE);
+        let e1 = encrypt_bytes(b"constant", &key_a, &key_b, 1, 0xDEADBEEF, 0);
+        let e2 = encrypt_bytes(b"constant", &key_a, &key_b, 1, 0xCAFEBABE, 0);
         assert_ne!(e1, e2, "different bs_seed must produce different ciphertext");
     }
 
@@ -413,7 +425,7 @@ mod tests {
             Constant::Bool(true),
             Constant::Nil,
         ] {
-            let out = format_const(c, &ka, &kb, 0, 0, &mut rng).unwrap();
+            let out = format_const(c, &ka, &kb, 0, 0, 0, &mut rng).unwrap();
             assert!(out.starts_with("_cw(\""), "expected single-arg form: {out}");
             assert!(out.ends_with("\")"), "expected single-arg form: {out}");
         }
@@ -497,10 +509,10 @@ mod tests {
         assert_eq!(k1, k2);
     }
 
-    /// Plan 32 Task 2 cross-impl test: Rust encrypt_bytes with a given bs_seed
-    /// must be decryptable by the Luau `_decrypt` function using the same bs_seed.
-    /// This validates that both sides implement the tangled constant cipher
-    /// identically.
+    /// Cross-impl test: Rust encrypt_bytes with a given bs_seed and token must
+    /// be decryptable by the Luau `_decrypt` function using the same bs_seed
+    /// XORed with the same token. Validates that both sides implement the
+    /// tangled constant cipher (including the session-token mix) identically.
     #[test]
     fn rust_luau_tangled_const_cipher_agree() {
         let key_a = [37u8; 32];
@@ -508,11 +520,15 @@ mod tests {
         let proto_id: u32 = 0; // use proto_id 0 → proto_salt = 0 → _KAS[1]/_KBS[1]
         let proto_salt: u64 = 0;
         let bs_seed: u32 = 0xCAFEBEEF;
+        // Use a non-zero token so the test verifies the token mix is correctly
+        // implemented on both sides.
+        let token: u32 = 0xDEAD1234;
         let plaintext = b"hello tangled constants";
 
-        let enc = encrypt_bytes(plaintext, &key_a, &key_b, proto_salt, bs_seed);
+        let enc = encrypt_bytes(plaintext, &key_a, &key_b, proto_salt, bs_seed, token);
 
         // Build Luau source that decrypts using the same algorithm.
+        // _decrypt now starts mix = bs_seed XOR _stoken (matching Rust's bs_seed ^ token).
         let ka_lit: String = key_a.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(", ");
         let kb_lit: String = key_b.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(", ");
         let enc_lit = encode_luau_string_literal(&enc);
@@ -527,6 +543,7 @@ local _KBS = {{ {{ {kb} }} }}
 local enc = "{enc_lit}"
 local proto_id = {pid}
 local bs_seed = {bs}
+local _stoken = {tok}
 local function _mul32(a, b)
     local a_lo = a % 65536
     local a_hi = (a - a_lo) / 65536
@@ -536,6 +553,7 @@ local function _mul32(a, b)
     return (a_lo * b_lo + mid * 65536) % 4294967296
 end
 local function _decrypt(e, pid, seed)
+    seed = _xor(seed, _stoken)
     local ka = _KAS[pid + 1]
     local kb = _KBS[pid + 1]
     local out = {{}}
@@ -558,6 +576,7 @@ print(_decrypt(enc, proto_id, bs_seed))
             enc_lit = enc_lit,
             pid = proto_id,
             bs = bs_seed,
+            tok = token,
         );
 
         let dir = tempfile::tempdir().unwrap();
