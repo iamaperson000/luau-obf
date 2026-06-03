@@ -13,10 +13,37 @@ local _schar = string.char
 local _tunpack = table.unpack or unpack
 local _tcreate = function(n) local t = {} for i=1,n do t[i] = false end return t end
 local _floor = math.floor
+local _xor = bit32.bxor
+local _tconcat = table.concat
 local _tpack = table.pack or function(...)
     local t = {...}
     t.n = _select("#", ...)
     return t
+end
+
+local _KA = { {{ key_a }} }
+local _KB = { {{ key_b }} }
+
+local function _decrypt(enc)
+    local out = {}
+    for i = 1, #enc do
+        local b = _sbyte(enc, i)
+        local idx = ((i - 1) % 32) + 1
+        local pos = (i - 1) % 256
+        out[i] = _schar(_xor(_xor(_xor(b, _KA[idx]), pos), _KB[idx]))
+    end
+    return _tconcat(out)
+end
+
+local function _enc(bytes) return { _e = bytes } end
+
+local function _const(consts, idx)
+    local c = consts[idx]
+    if type(c) == "table" and c._e then
+        c = _decrypt(c._e)
+        consts[idx] = c
+    end
+    return c
 end
 
 -- Opcode constants
@@ -92,7 +119,7 @@ vm_call = function(proto_id, args, nargs, upvals)
         elseif op == OP_LoadConst then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
-            regs[a] = consts[b + 1]
+            regs[a] = _const(consts, b + 1)
         elseif op == OP_Move then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
@@ -162,11 +189,11 @@ vm_call = function(proto_id, args, nargs, upvals)
         elseif op == OP_GetGlobal then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
-            regs[a] = _ENV_[consts[b + 1]]
+            regs[a] = _ENV_[_const(consts, b + 1)]
         elseif op == OP_SetGlobal then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
-            _ENV_[consts[a + 1]] = regs[b]
+            _ENV_[_const(consts, a + 1)] = regs[b]
         elseif op == OP_Call then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2

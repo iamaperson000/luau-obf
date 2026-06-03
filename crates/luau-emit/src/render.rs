@@ -13,17 +13,19 @@ use serde::Serialize;
 pub fn render(
     program: &LirProgram,
     opmap: &OpMap,
-    _rng: &mut ChaCha20Rng,
+    rng: &mut ChaCha20Rng,
 ) -> Result<String, EmitError> {
     let opcodes: Vec<(String, u8)> = ALL_OPS
         .iter()
         .map(|k| (opname(*k).to_string(), opmap.opcode_of(*k)))
         .collect();
 
+    let (key_a, key_b) = derive_string_keys(rng);
+
     let consts: Vec<String> = program
         .functions
         .iter()
-        .map(|f| format_const_pool(&f.consts))
+        .map(|f| format_const_pool(&f.consts, &key_a, &key_b))
         .collect();
 
     let codes: Vec<String> = program
@@ -46,6 +48,9 @@ pub fn render(
         })
         .collect();
 
+    let key_a_lit = format_byte_array_literal(&key_a);
+    let key_b_lit = format_byte_array_literal(&key_b);
+
     let mut env = Environment::new();
     env.add_template("vm", luau_runtime::VM_TEMPLATE)
         .map_err(|e| EmitError::Template(e.to_string()))?;
@@ -55,6 +60,8 @@ pub fn render(
         consts => consts,
         codes => codes,
         meta => meta,
+        key_a => key_a_lit,
+        key_b => key_b_lit,
     })
     .map_err(|e| EmitError::Template(e.to_string()))
 }
@@ -96,12 +103,12 @@ fn opname(k: OpKind) -> &'static str {
     }
 }
 
-fn format_const_pool(consts: &[Constant]) -> String {
-    let parts: Vec<String> = consts.iter().map(format_const).collect();
+fn format_const_pool(consts: &[Constant], key_a: &[u8; 32], key_b: &[u8; 32]) -> String {
+    let parts: Vec<String> = consts.iter().map(|c| format_const(c, key_a, key_b)).collect();
     parts.join(", ")
 }
 
-fn format_const(c: &Constant) -> String {
+fn format_const(c: &Constant, key_a: &[u8; 32], key_b: &[u8; 32]) -> String {
     match c {
         Constant::Nil => "nil".into(),
         Constant::Bool(true) => "true".into(),
@@ -112,26 +119,11 @@ fn format_const(c: &Constant) -> String {
             else if n.is_infinite() { "(-1/0)".into() }
             else { format!("{}", n) }
         }
-        Constant::String(s) => format!("\"{}\"", escape_luau_string(s)),
-    }
-}
-
-fn escape_luau_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                out.push_str(&format!("\\{}", c as u32));
-            }
-            c => out.push(c),
+        Constant::String(s) => {
+            let enc = encrypt_string(s, key_a, key_b);
+            format!("_enc(\"{}\")", encode_luau_string_literal(&enc))
         }
     }
-    out
 }
 
 pub(crate) fn derive_string_keys(rng: &mut ChaCha20Rng) -> ([u8; 32], [u8; 32]) {
