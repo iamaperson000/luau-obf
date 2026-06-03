@@ -290,6 +290,12 @@ fn lower_stmt(
                 value: HirExpr::Function(function),
             }])
         }
+        Stmt::CompoundAssignment(ca) => {
+            let target = lower_assign_lhs(lowerer, ca.lhs())?;
+            let op = lower_compound_op(ca.compound_operator())?;
+            let value = lower_expr(lowerer, ca.rhs())?;
+            Ok(vec![HirStmt::CompoundAssign { target, op, value }])
+        }
         other => Err(HirError::Unsupported(format!("statement form {other:?}"))),
     }
 }
@@ -533,6 +539,25 @@ fn lower_binop(op: &full_moon::ast::BinOp) -> Result<BinOp, HirError> {
         B::And(_) => BinOp::And,
         B::Or(_) => BinOp::Or,
         other => return Err(HirError::Unsupported(format!("binop {other:?}"))),
+    })
+}
+
+fn lower_compound_op(op: &full_moon::ast::luau::CompoundOp) -> Result<BinOp, HirError> {
+    use full_moon::ast::luau::CompoundOp as C;
+    Ok(match op {
+        C::PlusEqual(_) => BinOp::Add,
+        C::MinusEqual(_) => BinOp::Sub,
+        C::StarEqual(_) => BinOp::Mul,
+        C::SlashEqual(_) => BinOp::Div,
+        C::PercentEqual(_) => BinOp::Mod,
+        C::CaretEqual(_) => BinOp::Pow,
+        C::TwoDotsEqual(_) => BinOp::Concat,
+        C::DoubleSlashEqual(_) => {
+            return Err(HirError::Unsupported(
+                "`//=` (floor-division compound assign) is not a Luau operator".into(),
+            ));
+        }
+        other => return Err(HirError::Unsupported(format!("compound op {other:?}"))),
     })
 }
 
@@ -1355,5 +1380,62 @@ mod tests {
         let p = lower_str("for k in pairs(t) do continue end");
         let HirStmt::GenericFor { body, .. } = &p.main[0] else { panic!() };
         assert!(matches!(&body[0], HirStmt::Continue));
+    }
+
+    #[test]
+    fn lowers_compound_assign_symbol() {
+        let p = lower_str("local a = 1 a += 2");
+        // First stmt: LocalDecl. Second stmt: CompoundAssign.
+        match &p.main[1] {
+            HirStmt::CompoundAssign { target, op, value } => {
+                assert!(matches!(target, AssignTarget::Symbol(_)));
+                assert_eq!(*op, BinOp::Add);
+                assert!(matches!(value, HirExpr::Literal(HirLiteral::Number(n)) if *n == 2.0));
+            }
+            other => panic!("expected CompoundAssign, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lowers_compound_assign_global() {
+        let p = lower_str("g -= 5");
+        let HirStmt::CompoundAssign { target, op, .. } = &p.main[0] else { panic!() };
+        assert!(matches!(target, AssignTarget::Symbol(_)));
+        assert_eq!(*op, BinOp::Sub);
+    }
+
+    #[test]
+    fn lowers_compound_assign_index_dot() {
+        let p = lower_str("t.x *= 2");
+        let HirStmt::CompoundAssign { target, op, .. } = &p.main[0] else { panic!() };
+        assert!(matches!(target, AssignTarget::Index { .. }));
+        assert_eq!(*op, BinOp::Mul);
+    }
+
+    #[test]
+    fn lowers_compound_assign_index_bracket() {
+        let p = lower_str("t[k] /= 4");
+        let HirStmt::CompoundAssign { target, op, .. } = &p.main[0] else { panic!() };
+        assert!(matches!(target, AssignTarget::Index { .. }));
+        assert_eq!(*op, BinOp::Div);
+    }
+
+    #[test]
+    fn lowers_compound_assign_concat() {
+        let p = lower_str("local s = \"x\" s ..= \"y\"");
+        let HirStmt::CompoundAssign { op, .. } = &p.main[1] else { panic!() };
+        assert_eq!(*op, BinOp::Concat);
+    }
+
+    #[test]
+    fn lowers_compound_assign_upvalue() {
+        // Captured local: outer `x` becomes an upvalue inside f.
+        let p = lower_str("local x = 1 local f = function() x += 1 end");
+        let f = p.main.iter().find_map(|s| {
+            if let HirStmt::LocalDecl { value: HirExpr::Function(f), .. } = s { Some(f) } else { None }
+        }).expect("found f");
+        let HirStmt::CompoundAssign { target, op, .. } = &f.body[0] else { panic!() };
+        assert!(matches!(target, AssignTarget::Upvalue(_)));
+        assert_eq!(*op, BinOp::Add);
     }
 }
