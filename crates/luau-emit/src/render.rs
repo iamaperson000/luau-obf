@@ -118,21 +118,17 @@ fn format_const_pool(
 }
 
 fn format_const(c: &Constant, key_a: &[u8; 32], key_b: &[u8; 32], proto_salt: u64) -> String {
-    match c {
-        Constant::Nil => "nil".into(),
-        Constant::Bool(true) => "true".into(),
-        Constant::Bool(false) => "false".into(),
-        Constant::Number(n) => {
-            if n.is_nan() { "(0/0)".into() }
-            else if n.is_infinite() && *n > 0.0 { "(1/0)".into() }
-            else if n.is_infinite() { "(-1/0)".into() }
-            else { format!("{}", n) }
-        }
-        Constant::String(s) => {
-            let enc = encrypt_string(s, key_a, key_b, proto_salt);
-            format!("_enc(\"{}\")", encode_luau_string_literal(&enc))
-        }
-    }
+    // Plan 11: every constant of every type is uniformly wrapped as
+    // `_cw(tag, encrypted_bytes)`. Tags: 0=string, 1=number, 2=bool, 3=nil.
+    let (tag, plaintext): (u8, Vec<u8>) = match c {
+        Constant::Nil => (3, Vec::new()),
+        Constant::Bool(true) => (2, vec![1]),
+        Constant::Bool(false) => (2, vec![0]),
+        Constant::Number(n) => (1, n.to_le_bytes().to_vec()),
+        Constant::String(s) => (0, s.as_bytes().to_vec()),
+    };
+    let enc = encrypt_bytes(&plaintext, key_a, key_b, proto_salt);
+    format!("_cw({}, \"{}\")", tag, encode_luau_string_literal(&enc))
 }
 
 pub(crate) fn derive_string_keys(rng: &mut ChaCha20Rng) -> ([u8; 32], [u8; 32]) {
@@ -144,15 +140,14 @@ pub(crate) fn derive_string_keys(rng: &mut ChaCha20Rng) -> ([u8; 32], [u8; 32]) 
     (a, b)
 }
 
-pub(crate) fn encrypt_string(
-    plaintext: &str,
+pub(crate) fn encrypt_bytes(
+    plaintext: &[u8],
     key_a: &[u8; 32],
     key_b: &[u8; 32],
     proto_salt: u64,
 ) -> Vec<u8> {
-    let bytes = plaintext.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    for (i, b) in bytes.iter().enumerate() {
+    let mut out = Vec::with_capacity(plaintext.len());
+    for (i, b) in plaintext.iter().enumerate() {
         let ka = key_a[i % 32];
         let kb = key_b[i % 32];
         let pos = ((i as u64).wrapping_add(proto_salt.wrapping_mul(7919)) & 0xFF) as u8;
@@ -200,29 +195,29 @@ mod tests {
     fn encrypt_decrypt_round_trips() {
         let key_a = [42u8; 32];
         let key_b = [99u8; 32];
-        let plaintext = "print";
+        let plaintext = b"print";
         let proto_salt = 3u64;
-        let enc = encrypt_string(plaintext, &key_a, &key_b, proto_salt);
+        let enc = encrypt_bytes(plaintext, &key_a, &key_b, proto_salt);
         let dec: Vec<u8> = enc.iter().enumerate().map(|(i, b)| {
             let ka = key_a[i % 32];
             let kb = key_b[i % 32];
             let pos = ((i as u64).wrapping_add(proto_salt.wrapping_mul(7919)) & 0xFF) as u8;
             b ^ ka ^ pos ^ kb
         }).collect();
-        assert_eq!(dec, plaintext.as_bytes());
+        assert_eq!(dec, plaintext);
     }
 
     #[test]
     fn encrypt_changes_bytes_for_typical_input() {
         let key_a = [1u8; 32];
         let key_b = [2u8; 32];
-        let enc = encrypt_string("hello world", &key_a, &key_b, 0);
+        let enc = encrypt_bytes(b"hello world", &key_a, &key_b, 0);
         assert_ne!(enc, b"hello world");
     }
 
     #[test]
     fn empty_string_encrypts_to_empty() {
-        let enc = encrypt_string("", &[0u8; 32], &[0u8; 32], 0);
+        let enc = encrypt_bytes(b"", &[0u8; 32], &[0u8; 32], 0);
         assert!(enc.is_empty());
     }
 
@@ -230,8 +225,22 @@ mod tests {
     fn different_proto_salts_change_ciphertext() {
         let key_a = [3u8; 32];
         let key_b = [4u8; 32];
-        let e1 = encrypt_string("deposit", &key_a, &key_b, 1);
-        let e2 = encrypt_string("deposit", &key_a, &key_b, 2);
+        let e1 = encrypt_bytes(b"deposit", &key_a, &key_b, 1);
+        let e2 = encrypt_bytes(b"deposit", &key_a, &key_b, 2);
         assert_ne!(e1, e2);
+    }
+
+    #[test]
+    fn format_const_emits_cw_for_all_types() {
+        let ka = [0u8; 32];
+        let kb = [0u8; 32];
+        let s_out = format_const(&Constant::String("hi".into()), &ka, &kb, 0);
+        assert!(s_out.starts_with("_cw(0,"), "string: {s_out}");
+        let n_out = format_const(&Constant::Number(3.14), &ka, &kb, 0);
+        assert!(n_out.starts_with("_cw(1,"), "number: {n_out}");
+        let b_out = format_const(&Constant::Bool(true), &ka, &kb, 0);
+        assert!(b_out.starts_with("_cw(2,"), "bool: {b_out}");
+        let nil_out = format_const(&Constant::Nil, &ka, &kb, 0);
+        assert!(nil_out.starts_with("_cw(3,"), "nil: {nil_out}");
     }
 }

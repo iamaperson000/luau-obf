@@ -45,12 +45,22 @@ local function _decrypt(enc, salt)
     return _tconcat(out)
 end
 
-local function _enc(bytes) return { _e = bytes } end
+local function _cw(tag, bytes) return { _e = bytes, _t = tag } end
 
 local function _const(consts, idx, proto_id)
     local c = consts[idx]
-    if type(c) == "table" and c._e then
-        c = _decrypt(c._e, proto_id)
+    if type(c) == "table" and c._t then
+        local raw = _decrypt(c._e, proto_id)
+        local tag = c._t
+        if tag == 0 then
+            c = raw
+        elseif tag == 1 then
+            c = string.unpack("<d", raw)
+        elseif tag == 2 then
+            c = _sbyte(raw, 1) ~= 0
+        else
+            c = nil
+        end
         consts[idx] = c
     end
     return c

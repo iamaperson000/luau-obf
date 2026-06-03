@@ -129,7 +129,7 @@ pub const MANGLE_TARGETS: &[&str] = &[
     "_sbyte", "_ssub", "_schar", "_tunpack", "_tcreate", "_floor",
     "_tpack", "_xor", "_tconcat",
     // Encryption.
-    "_KA", "_KB", "_decrypt", "_enc", "_const",
+    "_KA", "_KB", "_decrypt", "_cw", "_const",
     "_byte", "_k0", "_k1",
     // Tables of per-proto data.
     "CONSTS", "CODE", "META",
@@ -144,6 +144,8 @@ pub const MANGLE_TARGETS: &[&str] = &[
     "kind", "payload", "captured", "pa", "n", "fn", "call_args",
     "total_n", "sp", "m", "sp_tbl", "mode", "r", "results", "tbl",
     "n_values", "count",
+    // _const helper locals (Plan 11).
+    "raw", "tag",
     // Bootstrap.
     "main_args", "main_n",
     // Misc inner-loop names.
