@@ -321,7 +321,7 @@ fn lower_last_stmt(
             }
         }
         LastStmt::Break(_) => Ok(HirStmt::Break),
-        LastStmt::Continue(_) => Err(HirError::Unsupported("continue (Plan 5)".into())),
+        LastStmt::Continue(_) => Ok(HirStmt::Continue),
         other => Err(HirError::Unsupported(format!("last stmt form {other:?}"))),
     }
 }
@@ -1327,5 +1327,33 @@ mod tests {
         let p = lower_str("for k in pairs(t) do end k = 1");
         // The second statement is a global assignment (k was scoped to the loop).
         assert!(matches!(&p.main[1], HirStmt::Assign { .. }));
+    }
+
+    #[test]
+    fn lowers_continue_in_while() {
+        let p = lower_str("while x do continue end");
+        let HirStmt::While { body, .. } = &p.main[0] else { panic!() };
+        assert!(matches!(&body[0], HirStmt::Continue));
+    }
+
+    #[test]
+    fn lowers_continue_in_numeric_for() {
+        let p = lower_str("for i = 1, 10 do continue end");
+        let HirStmt::NumericFor { body, .. } = &p.main[0] else { panic!() };
+        assert!(matches!(&body[0], HirStmt::Continue));
+    }
+
+    #[test]
+    fn lowers_continue_in_repeat() {
+        let p = lower_str("repeat continue until x");
+        let HirStmt::Repeat { body, .. } = &p.main[0] else { panic!() };
+        assert!(matches!(&body[0], HirStmt::Continue));
+    }
+
+    #[test]
+    fn lowers_continue_in_generic_for() {
+        let p = lower_str("for k in pairs(t) do continue end");
+        let HirStmt::GenericFor { body, .. } = &p.main[0] else { panic!() };
+        assert!(matches!(&body[0], HirStmt::Continue));
     }
 }
