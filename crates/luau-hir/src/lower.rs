@@ -2,8 +2,8 @@
 //! plan documents under `docs/superpowers/plans/` for what's currently in.
 
 use crate::{
-    BinOp, HirError, HirExpr, HirFunction, HirLiteral, HirProgram, HirStmt, Symbol, SymbolId,
-    SymbolKind, TableEntry, UnOp, UpvalueSource,
+    AssignTarget, BinOp, HirError, HirExpr, HirFunction, HirLiteral, HirProgram, HirStmt, Symbol,
+    SymbolId, SymbolKind, TableEntry, UnOp, UpvalueSource,
 };
 use luau_parse::Ast;
 use std::collections::HashMap;
@@ -166,36 +166,40 @@ fn lower_stmt(
         Stmt::LocalAssignment(la) => {
             let names: Vec<&full_moon::tokenizer::TokenReference> = la.names().iter().collect();
             let exprs: Vec<&full_moon::ast::Expression> = la.expressions().iter().collect();
-            if names.len() != 1 && !exprs.is_empty() && exprs.len() != names.len() {
-                return Err(HirError::Unsupported(
-                    "multi-decl with mismatched rhs (multi-return is Plan 4)".into(),
-                ));
-            }
-            let mut out = Vec::with_capacity(names.len());
-            for (i, name_tok) in names.iter().enumerate() {
-                let value = if let Some(expr) = exprs.get(i) {
-                    lower_expr(lowerer, expr)?
-                } else {
-                    HirExpr::Literal(HirLiteral::Nil)
-                };
-                let symbol = lowerer.declare_local(&name_tok.token().to_string());
-                out.push(HirStmt::LocalDecl { symbol, value });
-            }
-            Ok(out)
+            // Lower the expressions first (so any names they reference resolve to
+            // outer scopes, not the new locals).
+            let lowered_exprs: Vec<HirExpr> = exprs.iter()
+                .map(|e| lower_expr(lowerer, e))
+                .collect::<Result<_, _>>()?;
+            // Declare the locals AFTER lowering the RHS.
+            let symbols: Vec<SymbolId> = names.iter()
+                .map(|t| lowerer.declare_local(&t.token().to_string()))
+                .collect();
+            Ok(lower_multi_binding_locals(symbols, lowered_exprs))
         }
         Stmt::Assignment(a) => {
             let vars: Vec<&full_moon::ast::Var> = a.variables().iter().collect();
             let exprs: Vec<&full_moon::ast::Expression> = a.expressions().iter().collect();
-            if vars.len() != exprs.len() {
-                return Err(HirError::Unsupported(
-                    "multi-assign with mismatched rhs (multi-return is Plan 4)".into(),
-                ));
+            let lowered_exprs: Vec<HirExpr> = exprs.iter()
+                .map(|e| lower_expr(lowerer, e))
+                .collect::<Result<_, _>>()?;
+            let mut targets = Vec::with_capacity(vars.len());
+            for v in &vars {
+                targets.push(lower_assign_lhs(lowerer, v)?);
             }
-            let mut out = Vec::with_capacity(vars.len());
-            for (var, expr) in vars.iter().zip(exprs.iter()) {
-                let value = lower_expr(lowerer, expr)?;
-                out.push(lower_assign_target(lowerer, var, value)?);
+            let n = targets.len();
+            let m = lowered_exprs.len();
+            let last_can_spread = lowered_exprs.last().map(expr_can_spread).unwrap_or(false);
+            if last_can_spread && m < n {
+                return Ok(vec![HirStmt::AssignMulti { targets, exprs: lowered_exprs }]);
             }
+            let mut out = Vec::with_capacity(n);
+            let mut it = lowered_exprs.into_iter();
+            for t in targets.into_iter() {
+                let v = it.next().unwrap_or(HirExpr::Literal(HirLiteral::Nil));
+                out.push(assign_one(t, v));
+            }
+            let _ = it;
             Ok(out)
         }
         Stmt::FunctionCall(call) => {
@@ -282,16 +286,32 @@ fn lower_last_stmt(
             let exprs: Vec<&full_moon::ast::Expression> = ret.returns().iter().collect();
             match exprs.len() {
                 0 => Ok(HirStmt::Return(None)),
-                1 => Ok(HirStmt::Return(Some(lower_expr(lowerer, exprs[0])?))),
-                _ => Err(HirError::Unsupported(
-                    "multi-return (Plan 4)".into(),
-                )),
+                1 => {
+                    let e = lower_expr(lowerer, exprs[0])?;
+                    if expr_can_spread(&e) {
+                        Ok(HirStmt::ReturnMulti(vec![e]))
+                    } else {
+                        Ok(HirStmt::Return(Some(e)))
+                    }
+                }
+                _ => {
+                    let lowered: Result<Vec<HirExpr>, _> = exprs.iter()
+                        .map(|e| lower_expr(lowerer, e))
+                        .collect();
+                    Ok(HirStmt::ReturnMulti(lowered?))
+                }
             }
         }
         LastStmt::Break(_) => Ok(HirStmt::Break),
-        LastStmt::Continue(_) => Err(HirError::Unsupported("continue (Plan 4)".into())),
+        LastStmt::Continue(_) => Err(HirError::Unsupported("continue (Plan 5)".into())),
         other => Err(HirError::Unsupported(format!("last stmt form {other:?}"))),
     }
+}
+
+/// True if the expression, when in tail position of an expression list,
+/// can produce more than one value.
+fn expr_can_spread(e: &HirExpr) -> bool {
+    matches!(e, HirExpr::Call { .. } | HirExpr::MethodCall { .. } | HirExpr::Vararg)
 }
 
 fn lower_function_body(
@@ -337,6 +357,7 @@ fn lower_expr(
                 "nil" => Ok(HirExpr::Literal(HirLiteral::Nil)),
                 "true" => Ok(HirExpr::Literal(HirLiteral::Bool(true))),
                 "false" => Ok(HirExpr::Literal(HirLiteral::Bool(false))),
+                "..." => Ok(HirExpr::Vararg),
                 other => Err(HirError::Unsupported(format!(
                     "symbol expression {other:?}"
                 ))),
@@ -546,16 +567,16 @@ fn unescape(s: &str) -> String {
     out
 }
 
-fn lower_assign_target(
+/// Lower the LHS of a single assignment slot into an `AssignTarget`.
+fn lower_assign_lhs(
     lowerer: &mut Lowerer,
     var: &full_moon::ast::Var,
-    value: HirExpr,
-) -> Result<HirStmt, HirError> {
+) -> Result<AssignTarget, HirError> {
     use full_moon::ast::{Index, Prefix, Suffix, Var};
     match var {
         Var::Name(t) => match lowerer.resolve(&t.token().to_string()) {
-            Resolved::Symbol(target) => Ok(HirStmt::Assign { target, value }),
-            Resolved::Upvalue(idx) => Ok(HirStmt::UpvalueAssign { upvalue: idx, value }),
+            Resolved::Symbol(s) => Ok(AssignTarget::Symbol(s)),
+            Resolved::Upvalue(idx) => Ok(AssignTarget::Upvalue(idx)),
         },
         Var::Expression(ve) => {
             let suffixes: Vec<&Suffix> = ve.suffixes().collect();
@@ -576,16 +597,49 @@ fn lower_assign_target(
                 Suffix::Index(Index::Dot { name, .. }) => {
                     HirExpr::Literal(HirLiteral::String(name.token().to_string()))
                 }
-                other => {
-                    return Err(HirError::Unsupported(format!(
-                        "assign LHS last suffix must be index, got {other:?}"
-                    )))
-                }
+                other => return Err(HirError::Unsupported(format!(
+                    "assign LHS last suffix must be index, got {other:?}"
+                ))),
             };
-            Ok(HirStmt::IndexAssign { obj, key, value })
+            Ok(AssignTarget::Index { obj, key })
         }
         other => Err(HirError::Unsupported(format!("assign target form {other:?}"))),
     }
+}
+
+/// Build a single-slot assignment statement from a target and a value.
+fn assign_one(target: AssignTarget, value: HirExpr) -> HirStmt {
+    match target {
+        AssignTarget::Symbol(s) => HirStmt::Assign { target: s, value },
+        AssignTarget::Upvalue(idx) => HirStmt::UpvalueAssign { upvalue: idx, value },
+        AssignTarget::Index { obj, key } => HirStmt::IndexAssign { obj, key, value },
+    }
+}
+
+/// Lower an N-target, M-expression local declaration applying Lua's adjust rule.
+/// Emits either N single `LocalDecl`s (no-spread fast path) or one `LocalDeclMulti`
+/// (when the RHS may spread). Lua's "adjust" rule: spread fires only when there
+/// are fewer RHS than LHS AND the last RHS can produce multiple values.
+fn lower_multi_binding_locals(symbols: Vec<SymbolId>, exprs: Vec<HirExpr>) -> Vec<HirStmt> {
+    if exprs.is_empty() {
+        return symbols.into_iter()
+            .map(|s| HirStmt::LocalDecl { symbol: s, value: HirExpr::Literal(HirLiteral::Nil) })
+            .collect();
+    }
+    let last_can_spread = expr_can_spread(exprs.last().unwrap());
+    let n = symbols.len();
+    let m = exprs.len();
+    if last_can_spread && m < n {
+        return vec![HirStmt::LocalDeclMulti { symbols, exprs }];
+    }
+    let mut out = Vec::with_capacity(n);
+    let mut it = exprs.into_iter();
+    for s in symbols.into_iter() {
+        let v = it.next().unwrap_or(HirExpr::Literal(HirLiteral::Nil));
+        out.push(HirStmt::LocalDecl { symbol: s, value: v });
+    }
+    let _ = it; // Extras (m > n) are dropped — side effects already baked into prior lowering.
+    out
 }
 
 fn lower_table_ctor(
@@ -1152,5 +1206,81 @@ mod tests {
                 assert!(msg.contains("`...` must be the last"), "got: {msg}");
             }
         }
+    }
+
+    #[test]
+    fn lowers_multi_return_two_values() {
+        let p = lower_str("function f() return 1, 2 end");
+        let HirStmt::FunctionDecl { function, .. } = &p.main[0] else { panic!() };
+        match &function.body[0] {
+            HirStmt::ReturnMulti(es) => assert_eq!(es.len(), 2),
+            other => panic!("expected ReturnMulti, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lowers_return_call_as_returnmulti() {
+        let p = lower_str("function f() return g() end");
+        let HirStmt::FunctionDecl { function, .. } = &p.main[0] else { panic!() };
+        match &function.body[0] {
+            HirStmt::ReturnMulti(es) => {
+                assert_eq!(es.len(), 1);
+                assert!(matches!(es[0], HirExpr::Call { .. }));
+            }
+            other => panic!("expected ReturnMulti for `return g()`, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lowers_local_multi_decl_with_call_rhs() {
+        let p = lower_str("local a, b = f()");
+        match &p.main[0] {
+            HirStmt::LocalDeclMulti { symbols, exprs } => {
+                assert_eq!(symbols.len(), 2);
+                assert_eq!(exprs.len(), 1);
+                assert!(matches!(exprs[0], HirExpr::Call { .. }));
+            }
+            other => panic!("expected LocalDeclMulti, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lowers_local_multi_decl_equal_length_as_single_decls() {
+        // Equal-length non-spread RHS: lowered as two LocalDecls, not LocalDeclMulti.
+        let p = lower_str("local a, b = 1, 2");
+        assert_eq!(p.main.len(), 2);
+        assert!(matches!(p.main[0], HirStmt::LocalDecl { .. }));
+        assert!(matches!(p.main[1], HirStmt::LocalDecl { .. }));
+    }
+
+    #[test]
+    fn lowers_multi_assign_with_call_rhs() {
+        let p = lower_str("a, b = f()");
+        match &p.main[0] {
+            HirStmt::AssignMulti { targets, exprs } => {
+                assert_eq!(targets.len(), 2);
+                assert_eq!(exprs.len(), 1);
+            }
+            other => panic!("expected AssignMulti, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lowers_local_decl_short_rhs_pads_with_nil() {
+        // Three names, two non-spread exprs: a=1, b=2, c=nil — three LocalDecls.
+        let p = lower_str("local a, b, c = 1, 2");
+        assert_eq!(p.main.len(), 3);
+        let HirStmt::LocalDecl { value, .. } = &p.main[2] else { panic!() };
+        assert!(matches!(value, HirExpr::Literal(HirLiteral::Nil)));
+    }
+
+    #[test]
+    fn lowers_vararg_expression() {
+        let p = lower_str("local f = function(...) local t = ... end");
+        let HirStmt::LocalDecl { value, .. } = &p.main[0] else { panic!() };
+        let HirExpr::Function(f) = value else { panic!() };
+        assert!(f.is_vararg);
+        let HirStmt::LocalDecl { value: inner, .. } = &f.body[0] else { panic!() };
+        assert!(matches!(inner, HirExpr::Vararg));
     }
 }
