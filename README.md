@@ -2,13 +2,14 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 17 — Mul operand-scatter shipped. Combined with Plans 15
-(Sub→Neg+Add) and 16 (Add operand-padding), every additive and
-multiplicative MIR operator is rewritten probabilistically into a
-seed-derived synthetic expansion. The numeric-VLocal dataflow analyzer
-guards every rewrite, so programs that overload arithmetic metamethods
-remain correct. Next plans extend the family (boolean mangling, constant
-decomposition) before moving to control-flow obfuscation.
+**Status:** Plan 18 — first CFG-level obfuscation pass. Each conditional
+`Branch` terminator in the MIR is flipped with 30% probability: a `Not(cond)`
+is appended to the predecessor block and the then/else successors are
+swapped. Combined with Plans 15-17's arithmetic mangling, the obfuscated
+bytecode now diverges from source structure at both the expression and
+control-flow levels — a static analyzer must simulate every `Not` opcode
+just to recover the source-level `if`/`else` polarity. Next plans add
+opaque predicates and junk blocks, then full control-flow flattening.
 
 ## Build
 
