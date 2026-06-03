@@ -15,8 +15,17 @@
 //! All result VLocals remain dead. Mode 1 defeats an adversary's constant
 //! folder because `lv` is not statically known.
 //!
-//! **RNG schedule** (mode-invariant — 6 draws regardless of mode):
+//! **Consume mode** (~25% of injections, independent of chain mode):
+//! After the chain, if a live Number VLocal `live_target` is available, append:
+//!   step1       = Add(live_target, tmp2)   -- reads tmp2; tmp2 is now live
+//!   live_target = Sub(step1, tmp2)         -- net-zero: live_target unchanged
+//!
+//! This forces a static analyzer to prove `+x - x == 0` (SMT-class) to strip
+//! the chain, because `tmp2`'s value is not statically evident.
+//!
+//! **RNG schedule** (mode-invariant — 8 draws regardless of mode/consume):
 //!   roll(u8) → pos(u32) → mode(u8) → δ1(u32) → δ2(u32) → live_idx(u32)
+//!   → consume_coin(u8) → consume_target_pick(u32)
 
 use crate::Pass;
 use crate::analysis;
@@ -44,12 +53,14 @@ impl Pass for JunkArithmetic {
                 // Draw 1: inject roll.
                 let roll = rng.gen::<u8>() % 100;
                 if roll >= INJECT_PERCENT {
-                    // Still drain the remaining 5 RNG draws to stay schedule-invariant.
+                    // Still drain the remaining 7 RNG draws to stay schedule-invariant.
                     let _pos_pick = rng.gen::<u32>();
                     let _mode = rng.gen::<u8>();
                     let _d1 = rng.gen_range(DELTA_MIN..=DELTA_MAX);
                     let _d2 = rng.gen_range(DELTA_MIN..=DELTA_MAX);
                     let _live_pick = rng.gen::<u32>();
+                    let _consume_coin = rng.gen::<u8>();
+                    let _consume_target_pick = rng.gen::<u32>();
                     continue;
                 }
 
@@ -67,11 +78,16 @@ impl Pass for JunkArithmetic {
                 // Draw 6: live operand index (always drawn).
                 let live_pick: u32 = rng.gen::<u32>();
 
-                // Compute candidate set before pos.
+                // Draw 7 & 8: consume-mode coin and target index (always drawn).
+                let consume_coin: u8 = rng.gen::<u8>();
+                let consume_target_pick: u32 = rng.gen::<u32>();
+
+                // Compute candidate set before pos (for chain mode selection).
                 let candidates = analysis::number_vlocals_before(block, pos, &consts);
                 let use_live = mode_pick == 1 && !candidates.is_empty();
 
-                if use_live {
+                // Emit the chain and record the tmp2 VLocal for potential consume.
+                let tmp2 = if use_live {
                     // Mode 1: 3-instruction shape with a live VLocal as lhs.
                     let mut cand_vec: Vec<u32> = candidates.into_iter().collect();
                     cand_vec.sort();
@@ -103,8 +119,8 @@ impl Pass for JunkArithmetic {
                     for instr in junk.iter().rev().cloned() {
                         block.instrs.insert(pos, instr);
                     }
-                    let _ = tmp2;
                     let _ = delta1; // intentionally drawn but unused in mode 1
+                    tmp2
                 } else {
                     // Mode 0: original 4-instruction shape.
                     let c1_id = ConstId(consts.len() as u32);
@@ -137,8 +153,45 @@ impl Pass for JunkArithmetic {
                     for instr in junk.iter().rev().cloned() {
                         block.instrs.insert(pos, instr);
                     }
-                    let _ = tmp2;
                     let _ = live_pick; // intentionally drawn but unused in mode 0
+                    tmp2
+                };
+
+                // Consume mode (~25%): make tmp2 live by adding a net-zero pair.
+                // Requires a live Number VLocal available at the insertion point.
+                // Candidates are re-computed AFTER the chain (pos + chain length).
+                if consume_coin % 4 == 0 {
+                    let chain_len = if use_live { 3 } else { 4 };
+                    let consume_pos = pos + chain_len;
+                    let consume_candidates =
+                        analysis::number_vlocals_before(block, consume_pos, &consts);
+                    if !consume_candidates.is_empty() {
+                        let mut cand_vec: Vec<u32> = consume_candidates.into_iter().collect();
+                        cand_vec.sort();
+                        let live_target =
+                            VLocal(cand_vec[(consume_target_pick as usize) % cand_vec.len()]);
+
+                        let step1 = VLocal(n_locals);
+                        n_locals += 1;
+
+                        let consume: [Instr; 2] = [
+                            Instr::BinOp {
+                                dst: step1,
+                                op: BinOp::Add,
+                                lhs: Value::VLocal(live_target),
+                                rhs: Value::VLocal(tmp2),
+                            },
+                            Instr::BinOp {
+                                dst: VLocal(live_target.0),
+                                op: BinOp::Sub,
+                                lhs: Value::VLocal(step1),
+                                rhs: Value::VLocal(tmp2),
+                            },
+                        ];
+                        for instr in consume.iter().rev().cloned() {
+                            block.instrs.insert(consume_pos, instr);
+                        }
+                    }
                 }
             }
             f.n_locals = n_locals;
@@ -212,12 +265,13 @@ mod tests {
             // Each injection adds either 3 (mode 1) or 4 (mode 0) instructions.
             let instr_growth = total_instrs(&p_clone) - total_instrs(&mir_of(src));
             let injections = (muls_after - muls_before) as usize;
-            // Instruction growth should be 3*n to 4*n (mix of modes).
+            // Instruction growth is 3–4 per injection (chain) plus 0 or 2
+            // consume instructions, so between 3*n and 6*n total.
             if injections > 0 {
                 assert!(
-                    instr_growth >= 3 * injections && instr_growth <= 4 * injections,
-                    "seed {}: instr growth {} not in [3n={}, 4n={}]",
-                    s, instr_growth, 3 * injections, 4 * injections
+                    instr_growth >= 3 * injections && instr_growth <= 6 * injections,
+                    "seed {}: instr growth {} not in [3n={}, 6n={}]",
+                    s, instr_growth, 3 * injections, 6 * injections
                 );
                 saw_injection = true;
             }
@@ -346,6 +400,34 @@ mod tests {
             found_live_operand,
             "no seed in 0..200 produced a BinOp::Add whose lhs is a pre-pass VLocal"
         );
+    }
+
+    #[test]
+    fn consume_mode_produces_tmp2_reads() {
+        // Sweep seeds; in at least some, expect to see tmp2 used as an OPERAND
+        // in a BinOp that writes back to a pre-pass VLocal slot (consume mode).
+        let src = "local s = 0 for i = 1, 5 do s = s + i * 2 end print(s)";
+        let pre_pass_n_locals = mir_of(src).functions[0].n_locals;
+        let mut saw_consume = false;
+        'outer: for seed_byte in 0..100u8 {
+            let mut p = mir_of(src);
+            let mut rng = ChaCha20Rng::from_seed([seed_byte; 32]);
+            JunkArithmetic.run(&mut p, &mut rng);
+            for f in &p.functions {
+                for b in &f.blocks {
+                    for instr in &b.instrs {
+                        // Consume mode emits: dst=<pre-pass VLocal>, rhs=<pass-alloc VLocal>.
+                        if let Instr::BinOp { dst, rhs: Value::VLocal(rhs_vl), .. } = instr {
+                            if dst.0 < pre_pass_n_locals && rhs_vl.0 >= pre_pass_n_locals {
+                                saw_consume = true;
+                                break 'outer;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(saw_consume, "no consume-mode injection found in 100 seeds");
     }
 
     #[test]
