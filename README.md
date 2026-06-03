@@ -2,13 +2,12 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 23 — Goto trampoline insertion. Each `Goto(target)`
-terminator has a 30% chance of being rerouted through an empty
-intermediate block whose terminator points to the original target. The
-CFG gains one block and one indirect hop per insertion, while runtime
-behavior is unchanged. Combined with Plan 20's opaque-true wrapping,
-trampolines may themselves be wrapped — turning a single `Goto` into a
-two-hop opaque-branch chain.
+**Status:** Plan 24 — synthetic Move insertion. Each MIR basic block has
+a 25% chance of receiving a dead Move from the block's first writer to
+a fresh VLocal. Adds Move opcodes throughout the bytecode without
+changing semantics. Combined with Plan 21's junk arithmetic, every
+block has stochastic dead-store payload that a deobfuscator must
+liveness-analyze.
 
 ## Build
 
