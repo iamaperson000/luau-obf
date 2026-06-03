@@ -8,6 +8,8 @@ license.workspace = true
 [dependencies]
 luau-mir = { path = "../luau-mir" }
 luau-hir = { path = "../luau-hir" }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

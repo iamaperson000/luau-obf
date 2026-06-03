@@ -3,6 +3,7 @@
 mod types;
 mod regalloc;
 pub mod lower;
+pub mod shuffle;
 
 pub use types::*;
 pub use regalloc::RegMap;

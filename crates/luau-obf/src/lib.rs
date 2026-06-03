@@ -40,7 +40,8 @@ pub fn obfuscate(source: &str, opts: Options) -> Result<ObfuscateResult, Error> 
     let mut mir = luau_mir::lower::lower(&hir)?;
     let plan = luau_passes::default_plan();
     plan.run(&mut mir, &mut rng);
-    let lir = luau_lir::lower::lower(&mir)?;
+    let mut lir = luau_lir::lower::lower(&mir)?;
+    luau_lir::shuffle::shuffle_constants(&mut lir, &mut rng);
     let output = luau_emit::emit(&lir, &mut rng)?;
     Ok(ObfuscateResult { output, seed_used: seed })
 }
