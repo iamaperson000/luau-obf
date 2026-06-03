@@ -13,6 +13,11 @@ local _schar = string.char
 local _tunpack = table.unpack or unpack
 local _tcreate = function(n) local t = {} for i=1,n do t[i] = false end return t end
 local _floor = math.floor
+local _tpack = table.pack or function(...)
+    local t = {...}
+    t.n = _select("#", ...)
+    return t
+end
 
 -- Opcode constants
 {% for opname, num in opcodes %}local OP_{{ opname }} = {{ num }}
@@ -28,9 +33,9 @@ local CODE = {
 {% for code_lit in codes %}    {{ code_lit }},
 {% endfor %}}
 
--- Proto metadata: { num_params, num_regs, num_upvals }
+-- Proto metadata: { num_params, num_regs, num_upvals, is_vararg }
 local META = {
-{% for m in meta %}    { {{ m.num_params }}, {{ m.num_regs }}, {{ m.num_upvals }} },
+{% for m in meta %}    { {{ m.num_params }}, {{ m.num_regs }}, {{ m.num_upvals }}, {{ m.is_vararg }} },
 {% endfor %}}
 
 -- Read a little-endian u16 at byte offset `pos` (1-based) of `code`.
@@ -54,10 +59,21 @@ vm_call = function(proto_id, args, nargs, upvals)
     local meta = META[proto_id + 1]
     local num_params = meta[1]
     local num_regs = meta[2]
+    local is_vararg = meta[4] == 1
     upvals = upvals or {}
     local regs = _tcreate(num_regs + 1)
     for i = 1, num_params do
         regs[i - 1] = args[i]
+    end
+    local frame_varargs
+    if is_vararg then
+        local vn = nargs - num_params
+        if vn < 0 then vn = 0 end
+        frame_varargs = {}
+        for i = 1, vn do
+            frame_varargs[i] = args[num_params + i]
+        end
+        frame_varargs.n = vn
     end
     local pc = 1
     local code_len = #code
@@ -233,6 +249,66 @@ vm_call = function(proto_id, args, nargs, upvals)
             local b = read_u16(code, pc); pc = pc + 2
             local cell = upvals[idx + 1]
             cell.tbl[cell.key] = regs[b]
+        elseif op == OP_CallVar then
+            local a = read_u16(code, pc); pc = pc + 2
+            local b = read_u16(code, pc); pc = pc + 2
+            local n = read_i16(code, pc); pc = pc + 2
+            local sp = read_u16(code, pc); pc = pc + 2
+            local mode = read_i16(code, pc); pc = pc + 2
+            local fn = regs[b]
+            local call_args = {}
+            local total_n = n
+            for i = 1, n do
+                call_args[i] = regs[b + i]
+            end
+            if sp ~= 0xFFFF then
+                local sp_tbl = regs[sp]
+                local m = sp_tbl.n or 0
+                for i = 1, m do
+                    call_args[total_n + 1] = sp_tbl[i]
+                    total_n = total_n + 1
+                end
+            end
+            if mode == 0 then
+                fn(_tunpack(call_args, 1, total_n))
+            elseif mode == 1 then
+                local r = fn(_tunpack(call_args, 1, total_n))
+                if a ~= 0xFFFF then
+                    regs[a] = r
+                end
+            else
+                local results = _tpack(fn(_tunpack(call_args, 1, total_n)))
+                regs[a] = results
+            end
+        elseif op == OP_BuildResults then
+            local a = read_u16(code, pc); pc = pc + 2
+            local sp = read_u16(code, pc); pc = pc + 2
+            pc = pc + 2  -- skip the br_idx operand (Rust-side encoding bookkeeping)
+            local n_values = read_u16(code, pc); pc = pc + 2
+            local tbl = {}
+            local count = 0
+            for _ = 1, n_values do
+                local r = read_u16(code, pc); pc = pc + 2
+                count = count + 1
+                tbl[count] = regs[r]
+            end
+            if sp ~= 0xFFFF then
+                local sp_tbl = regs[sp]
+                local m = sp_tbl.n or 0
+                for i = 1, m do
+                    count = count + 1
+                    tbl[count] = sp_tbl[i]
+                end
+            end
+            tbl.n = count
+            regs[a] = tbl
+        elseif op == OP_Vararg then
+            local a = read_u16(code, pc); pc = pc + 2
+            regs[a] = frame_varargs
+        elseif op == OP_ReturnMulti then
+            local a = read_u16(code, pc); pc = pc + 2
+            local tbl = regs[a]
+            return _tunpack(tbl, 1, tbl.n)
         else
             _error("luau-obf: unknown opcode " .. _tostring(op))
         end
