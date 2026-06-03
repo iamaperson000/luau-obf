@@ -9,6 +9,7 @@ use rand_chacha::ChaCha20Rng;
 
 pub mod analysis;
 pub mod identity;
+pub mod const_decompose;
 pub mod expr_mangle;
 pub mod add_padding;
 pub mod mul_padding;
@@ -68,6 +69,7 @@ impl Default for PassPlan {
 pub fn default_plan() -> PassPlan {
     PassPlan::new()
         .push(Box::new(identity::Identity))
+        .push(Box::new(const_decompose::ConstantDecompose))
         .push(Box::new(expr_mangle::ExpressionMangle))
         .push(Box::new(add_padding::AddIdentityPadding))
         .push(Box::new(mul_padding::MulOperandScatter))
