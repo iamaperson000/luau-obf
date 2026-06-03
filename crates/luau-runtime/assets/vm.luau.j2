@@ -66,11 +66,6 @@ local CODE = {
 {% for code_lit in codes %}    {{ code_lit }},
 {% endfor %}}
 
--- Proto metadata: { num_params, num_regs, num_upvals, is_vararg }
-local META = {
-{% for m in meta %}    { {{ m.num_params }}, {{ m.num_regs }}, {{ m.num_upvals }}, {{ m.is_vararg }} },
-{% endfor %}}
-
 -- Read a little-endian u16 at byte offset `pos` (1-based) of `code`.
 local function read_u16(code, pos, pid)
     local lo = _byte(code, pos, pid)
@@ -89,10 +84,9 @@ local vm_call
 vm_call = function(proto_id, args, nargs, upvals)
     local code = CODE[proto_id + 1]
     local consts = CONSTS[proto_id + 1]
-    local meta = META[proto_id + 1]
-    local num_params = meta[1]
-    local num_regs = meta[2]
-    local is_vararg = meta[4] == 1
+    local num_params = _byte(code, 1, proto_id)
+    local num_regs = _byte(code, 2, proto_id) + _byte(code, 3, proto_id) * 256
+    local is_vararg = _byte(code, 5, proto_id) == 1
     upvals = upvals or {}
     local regs = _tcreate(num_regs + 1)
     for i = 1, num_params do
@@ -108,7 +102,7 @@ vm_call = function(proto_id, args, nargs, upvals)
         end
         frame_varargs.n = vn
     end
-    local pc = 1
+    local pc = 6
     local code_len = #code
     while pc <= code_len do
         local op = _byte(code, pc, proto_id)

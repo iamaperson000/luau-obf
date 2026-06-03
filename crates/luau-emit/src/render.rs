@@ -8,7 +8,6 @@ use luau_lir::{LirProgram, OpKind};
 use luau_mir::Constant;
 use minijinja::Environment;
 use rand_chacha::ChaCha20Rng;
-use serde::Serialize;
 
 pub fn render(
     program: &LirProgram,
@@ -51,17 +50,6 @@ pub fn render(
         })
         .collect();
 
-    let meta: Vec<MetaEntry> = program
-        .functions
-        .iter()
-        .map(|f| MetaEntry {
-            num_params: f.num_params,
-            num_regs: std::cmp::max(f.num_regs, f.num_params),
-            num_upvals: f.num_upvals,
-            is_vararg: if f.is_vararg { 1 } else { 0 },
-        })
-        .collect();
-
     let key_a_lit = format_byte_array_literal(&key_a);
     let key_b_lit = format_byte_array_literal(&key_b);
 
@@ -74,7 +62,6 @@ pub fn render(
         ops => ops,
         consts => consts,
         codes => codes,
-        meta => meta,
         key_a => key_a_lit,
         key_b => key_b_lit,
         k0 => k0,
@@ -86,14 +73,6 @@ pub fn render(
     let name_map = crate::mangle::build_name_map(rng);
     let mangled = crate::mangle::mangle_identifiers(&stripped, &name_map);
     Ok(mangled)
-}
-
-#[derive(Serialize)]
-struct MetaEntry {
-    num_params: u16,
-    num_regs: u16,
-    num_upvals: u16,
-    is_vararg: u8,  // 0 or 1
 }
 
 fn opname(k: OpKind) -> &'static str {

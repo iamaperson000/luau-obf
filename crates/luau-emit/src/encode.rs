@@ -19,8 +19,12 @@ pub fn encode_function(
     k0: u32,
     k1: u32,
 ) -> Vec<u8> {
+    // Prologue: num_params:u8, num_regs:u16_le, num_upvals:u8, is_vararg:u8.
+    // The instruction stream begins at byte offset 5 (pc=6 in 1-based terms).
+    const PROLOGUE_LEN: u32 = 5;
+
     let mut instr_byte_offsets: Vec<u32> = Vec::with_capacity(f.instrs.len() + 1);
-    let mut offset: u32 = 0;
+    let mut offset: u32 = PROLOGUE_LEN;
     let mut closure_counter: usize = 0;
     let mut build_results_counter: usize = 0;
     for instr in &f.instrs {
@@ -42,6 +46,13 @@ pub fn encode_function(
     let mut closure_emit: usize = 0;
     let mut br_emit: usize = 0;
     let mut out: Vec<u8> = Vec::with_capacity(offset as usize);
+    // Emit the 5-byte prologue first; the XOR pass at the bottom will encrypt
+    // it along with the instruction stream.
+    out.push(f.num_params as u8);
+    out.push((f.num_regs & 0xFF) as u8);
+    out.push(((f.num_regs >> 8) & 0xFF) as u8);
+    out.push(f.num_upvals as u8);
+    out.push(if f.is_vararg { 1 } else { 0 });
     for (i, instr) in f.instrs.iter().enumerate() {
         out.push(opmap.opcode_of(instr.op));
         let after_this = instr_byte_offsets[i] + instr_size_for_at(instr, f, closure_emit, br_emit);
@@ -158,9 +169,17 @@ mod tests {
         };
         let opmap = OpMap::new(&[0u8; 32]);
         let bytes = encode_function(&f, &opmap, 0, 0, 0);
-        assert_eq!(bytes.len(), 3);
-        assert_eq!(bytes[0], opmap.opcode_of(OpKind::Return));
-        assert_eq!(bytes[1], 0xFF);
-        assert_eq!(bytes[2], 0xFF);
+        // 5-byte prologue + 1 opcode byte + 2 operand bytes = 8.
+        assert_eq!(bytes.len(), 8);
+        // With k0=0 and k1=0 the keystream is all zero (pid=0), so prologue
+        // bytes appear unmodified.
+        assert_eq!(bytes[0], 0);       // num_params
+        assert_eq!(bytes[1], 0);       // num_regs lo
+        assert_eq!(bytes[2], 0);       // num_regs hi
+        assert_eq!(bytes[3], 0);       // num_upvals
+        assert_eq!(bytes[4], 0);       // is_vararg
+        assert_eq!(bytes[5], opmap.opcode_of(OpKind::Return));
+        assert_eq!(bytes[6], 0xFF);
+        assert_eq!(bytes[7], 0xFF);
     }
 }
