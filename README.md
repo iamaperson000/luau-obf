@@ -2,14 +2,15 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 19 — constant decomposition. Each finite numeric `LoadConst`
-in small-magnitude range is rewritten with 30% probability as
-`LoadConst(n + δ); LoadConst(δ); Sub`, with δ a seed-derived integer in
-[1, 65535]. The original literal is gone from the encrypted constant pool;
-two seed-derived blobs replace it. Composes with Plans 15-17: the inserted
-Sub becomes a candidate for `Sub → Neg + Add` rewriting, then for Add
-operand-padding. One source-level constant can compile to a multi-instruction
-synthetic chain per build.
+**Status:** Plan 20 — opaque-true predicates. Each unconditional `Goto`
+in the MIR is candidate for being wrapped in a `Branch { cond: δ*δ > 0,
+then: target, else: junk_block }`, where δ is a seed-derived integer in
+[1, 65535]. The else branch points to a per-function junk block holding
+~3 dead `LoadConst` instructions and a `Return(None)`. At runtime the
+opaque is always true; statically the analyzer must constant-propagate
+the Mul + Gt + δ value to prove it. The junk block compiles to bytecode
+but is never executed. Combined with Plans 17-18 (Mul scatter + branch
+polarity), the opaque Mul and Branch are themselves further mangled.
 
 ## Build
 
