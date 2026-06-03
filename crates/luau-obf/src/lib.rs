@@ -217,4 +217,83 @@ mod tests {
         assert_eq!(long.len(), dedup.len(),
             "found duplicate _enc payload of length >= 7 — per-proto salt is not working");
     }
+
+    #[test]
+    fn output_has_no_opcode_constants_block() {
+        // Plan 10: the opcode table is inlined, so the output should NOT contain
+        // 35 consecutive `local _xx = N` declarations of small integers.
+        let r = obfuscate("print(1 + 2)", Options { seed: Some([100u8; 32]) }).unwrap();
+        // Look for the canonical signature: many short `local NAME = SMALLNUM\n` lines.
+        // Heuristic: count lines matching `^local _\w+ = \d+\s*$` (just an integer literal,
+        // no operator). After Plan 10 there should be at most a handful (k0, k1, _KA-element
+        // declarations could match) — well below 35.
+        let lines_matching: usize = r.output.lines().filter(|l| {
+            let trimmed = l.trim();
+            // local _xx = NNN  (no operators on the RHS)
+            if !trimmed.starts_with("local ") { return false; }
+            let rest = trimmed.trim_start_matches("local ");
+            let mut parts = rest.splitn(2, '=');
+            let (lhs, rhs) = match (parts.next(), parts.next()) {
+                (Some(l), Some(r)) => (l.trim(), r.trim()),
+                _ => return false,
+            };
+            if !lhs.starts_with('_') { return false; }
+            // RHS is a bare nonnegative integer.
+            rhs.chars().all(|c| c.is_ascii_digit())
+        }).count();
+        assert!(lines_matching < 10,
+            "expected fewer than 10 `local _x = <int>` lines, found {}", lines_matching);
+    }
+
+    #[test]
+    fn bytecode_bytes_are_not_small_opcode_set() {
+        // Plan 10: bytecode bytes are XOR-encoded, so the BYTE DISTRIBUTION inside
+        // any CODE entry should NOT be tightly clustered in 1..=35.
+        let r = obfuscate(
+            "local function f(a, b) return a + b end print(f(3, 4))",
+            Options { seed: Some([200u8; 32]) }
+        ).unwrap();
+        // Find the first CODE entry — look for a long `"\NNN…"` string literal.
+        // Extract the first string literal that has more than 10 `\NNN` escapes.
+        let mut bytes_found: Vec<u8> = Vec::new();
+        for line in r.output.lines() {
+            if let Some(q1) = line.find('"') {
+                if let Some(q2_rel) = line[q1+1..].rfind('"') {
+                    let payload = &line[q1+1..q1+1+q2_rel];
+                    // Parse the \NNN escapes.
+                    let mut bytes: Vec<u8> = Vec::new();
+                    let mut chars = payload.chars().peekable();
+                    while let Some(c) = chars.next() {
+                        if c == '\\' {
+                            let mut digits = String::new();
+                            for _ in 0..3 {
+                                if let Some(&dc) = chars.peek() {
+                                    if dc.is_ascii_digit() { digits.push(dc); chars.next(); }
+                                    else { break; }
+                                }
+                            }
+                            if let Ok(n) = digits.parse::<u32>() {
+                                if n <= 255 { bytes.push(n as u8); }
+                            }
+                        } else if c.is_ascii() {
+                            bytes.push(c as u8);
+                        }
+                    }
+                    if bytes.len() > 30 {
+                        bytes_found = bytes;
+                        break;
+                    }
+                }
+            }
+        }
+        assert!(!bytes_found.is_empty(), "could not find a bytecode literal");
+        // If the bytes were plaintext opcodes, every byte would be in 1..=35
+        // (with operands as u16 LE pairs interleaved). After XOR encoding, the
+        // bytes are pseudo-random and should hit values outside 0..50 frequently.
+        let above_50: usize = bytes_found.iter().filter(|&&b| b > 50).count();
+        let ratio = above_50 as f64 / bytes_found.len() as f64;
+        assert!(ratio > 0.3,
+            "fewer than 30% of bytecode bytes are above 50 ({} of {}); \
+             suggests XOR encoding isn't applied", above_50, bytes_found.len());
+    }
 }
