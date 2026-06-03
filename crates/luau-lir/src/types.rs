@@ -39,6 +39,9 @@ pub enum OpKind {
     BuildResults,
     Vararg,
     ReturnMulti,
+    // Plan 30: encode-time superopcode (fused pair of LoadConst). Never appears in
+    // LIR produced by the MIR→LIR lowering; only synthesized during encode.
+    LoadConstLoadConst,
 }
 
 #[derive(Debug, Clone)]

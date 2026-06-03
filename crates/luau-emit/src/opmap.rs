@@ -10,7 +10,7 @@ use rand_chacha::ChaCha20Rng;
 
 pub struct OpMap {
     /// table[OpKind index] = opcode byte
-    forward: [u8; 35],
+    forward: [u8; 36],
 }
 
 impl OpMap {
@@ -18,7 +18,7 @@ impl OpMap {
         let mut rng = ChaCha20Rng::from_seed(*seed);
         let mut bytes: Vec<u8> = (1..=ALL_OPS.len() as u8).collect();
         bytes.shuffle(&mut rng);
-        let mut forward = [0u8; 35];
+        let mut forward = [0u8; 36];
         for (i, b) in bytes.into_iter().enumerate() {
             forward[i] = b;
         }
@@ -49,6 +49,8 @@ pub const ALL_OPS: &[OpKind] = &[
     OpKind::NewTable, OpKind::GetTable, OpKind::SetTable,
     OpKind::GetUpval, OpKind::SetUpval,
     OpKind::CallVar, OpKind::BuildResults, OpKind::Vararg, OpKind::ReturnMulti,
+    // Plan 30: encode-time superop (fused LoadConst pair).
+    OpKind::LoadConstLoadConst,
 ];
 
 fn op_index(k: OpKind) -> usize {

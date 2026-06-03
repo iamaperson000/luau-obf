@@ -107,7 +107,7 @@ vm_call = function(proto_id, args, nargs, upvals)
     local num_regs = _byte(code, 2, proto_id) + _byte(code, 3, proto_id) * 256
     local is_vararg = _byte(code, 5, proto_id) == 1
     local inv = {}
-    for i = 1, 35 do
+    for i = 1, {{ opcodes | length }} do
         inv[i] = _byte(code, 5 + i, proto_id)
     end
     upvals = upvals or {}
@@ -125,7 +125,7 @@ vm_call = function(proto_id, args, nargs, upvals)
         end
         frame_varargs.n = vn
     end
-    local pc = 41
+    local pc = {{ opcodes | length }} + 6
     local code_len = #code
     while pc <= code_len do
         local raw = _byte(code, pc, proto_id)
@@ -360,6 +360,13 @@ vm_call = function(proto_id, args, nargs, upvals)
             local a = read_u16(code, pc, proto_id); pc = pc + 2
             local tbl = regs[a]
             return _tunpack(tbl, 1, tbl.n)
+        elseif op == {{ ops.LoadConstLoadConst }} then
+            local a1 = read_u16(code, pc, proto_id); pc = pc + 2
+            local b1 = read_u16(code, pc, proto_id); pc = pc + 2
+            local a2 = read_u16(code, pc, proto_id); pc = pc + 2
+            local b2 = read_u16(code, pc, proto_id); pc = pc + 2
+            regs[a1] = _const(consts, b1 + 1, proto_id)
+            regs[a2] = _const(consts, b2 + 1, proto_id)
         else
             _error(_tostring(op))
         end

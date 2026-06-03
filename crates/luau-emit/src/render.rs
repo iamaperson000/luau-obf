@@ -118,16 +118,15 @@ pub fn render(
             .map(|_| crate::encode::make_opcode_permutation(n_ops, rng))
             .collect();
 
-        let codes: Vec<String> = program
-            .functions
-            .iter()
-            .enumerate()
-            .map(|(i, f)| {
-                let (perm, inv) = &perms_and_invs[i];
-                let bytes = encode_function(f, opmap, i as u32, k0, k1, perm, inv);
-                format!("\"{}\"", encode_luau_string_literal(&bytes))
-            })
-            .collect();
+        // Plan 30: encode_function now needs rng for stochastic LCLC fusion.
+        // We collect encoded bytes sequentially so each proto's rng consumption
+        // is deterministic within a fixed seed.
+        let mut codes: Vec<String> = Vec::with_capacity(program.functions.len());
+        for (i, f) in program.functions.iter().enumerate() {
+            let (perm, inv) = &perms_and_invs[i];
+            let bytes = encode_function(f, opmap, i as u32, k0, k1, perm, inv, rng);
+            codes.push(format!("\"{}\"", encode_luau_string_literal(&bytes)));
+        }
 
         let keys_a_lits: Vec<String> = per_proto_keys.iter().map(|(a, _)| format_byte_array_literal(a)).collect();
         let keys_b_lits: Vec<String> = per_proto_keys.iter().map(|(_, b)| format_byte_array_literal(b)).collect();
@@ -201,6 +200,8 @@ fn opname(k: OpKind) -> &'static str {
         OpKind::BuildResults => "BuildResults",
         OpKind::Vararg => "Vararg",
         OpKind::ReturnMulti => "ReturnMulti",
+        // Plan 30: encode-time superop — never in user MIR, only from fusion.
+        OpKind::LoadConstLoadConst => "LoadConstLoadConst",
     }
 }
 
