@@ -222,15 +222,6 @@ fn format_const(
     Ok(format!("_cw(\"{}\")", encode_luau_string_literal(&enc)))
 }
 
-pub(crate) fn derive_string_keys(rng: &mut ChaCha20Rng) -> ([u8; 32], [u8; 32]) {
-    use rand::RngCore;
-    let mut a = [0u8; 32];
-    let mut b = [0u8; 32];
-    rng.fill_bytes(&mut a);
-    rng.fill_bytes(&mut b);
-    (a, b)
-}
-
 pub(crate) fn derive_per_proto_string_keys(
     rng: &mut ChaCha20Rng,
     n_protos: usize,
