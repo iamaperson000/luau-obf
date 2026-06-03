@@ -1,4 +1,4 @@
--- luau-obf runtime
+-- runtime
 -- Generated; do not edit by hand.
 
 local _ENV_ = _ENV or getfenv(1)
@@ -355,7 +355,7 @@ vm_call = function(proto_id, args, nargs, upvals)
             local tbl = regs[a]
             return _tunpack(tbl, 1, tbl.n)
         else
-            _error("luau-obf: unknown opcode " .. _tostring(op))
+            _error(_tostring(op))
         end
     end
     return nil
