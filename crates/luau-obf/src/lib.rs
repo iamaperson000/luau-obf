@@ -124,22 +124,27 @@ mod tests {
     }
 
     /// Extract the stage-1 source from a stage-0-wrapped output. Parses the
-    /// first two `local <name> = "<...>"` lines as payload and key, then
+    /// first two `local <name> = "<...>"` lines as payload and base-key, then
     /// reverses the RC4 encryption to recover the stage-1 Luau source.
+    ///
+    /// After Plan 32 Task 4, the second literal is `_kbase` (not the actual
+    /// decryption key). The actual key is `derive_runtime_key(kbase, None)`.
     fn decrypt_stage1_from_output(output: &str) -> String {
-        // Find first quoted string literal — that's the payload.
+        // Find first quoted string literal — that's the payload (_s).
         let (payload_body, after_payload) = extract_first_quoted(output)
             .expect("first quoted literal (payload) missing from stage-0 output");
-        // Find next quoted literal — that's the key.
+        // Find next quoted literal — that's _kbase (the base, not the key).
         let (key_body, _) = extract_first_quoted(after_payload)
-            .expect("second quoted literal (key) missing from stage-0 output");
+            .expect("second quoted literal (kbase) missing from stage-0 output");
         let payload = decode_luau_string_literal_body(payload_body);
-        let key = decode_luau_string_literal_body(key_body);
-        assert_eq!(key.len(), 32, "stage-0 key isn't 32 bytes");
+        let base = decode_luau_string_literal_body(key_body);
+        assert_eq!(base.len(), 32, "stage-0 _kbase isn't 32 bytes");
+        let base_arr: &[u8; 32] = base.as_slice().try_into()
+            .expect("base is exactly 32 bytes");
+        // Plan 32 Task 4: the actual RC4 key = fnv_fingerprint(base) XOR base.
+        let runtime_key = luau_emit::stage0::derive_runtime_key(base_arr, None);
         // RC4 with drop-256 (symmetric: encrypt and decrypt are the same).
-        let key_arr: &[u8; 32] = key.as_slice().try_into()
-            .expect("key is exactly 32 bytes");
-        let plain = luau_emit::stage0::encrypt_payload(&payload, key_arr);
+        let plain = luau_emit::stage0::encrypt_payload(&payload, &runtime_key);
         String::from_utf8(plain).expect("stage-1 source is UTF-8")
     }
 
@@ -1345,25 +1350,47 @@ mod tests {
 
     #[test]
     fn tampering_with_bytecode_breaks_output() {
-        // Flip a byte in the middle of the obfuscated output and confirm the
-        // result is NOT "42". The CRC check will corrupt _const_bs_seed, making
-        // every constant decrypt to garbage so the program crashes or misbehaves.
+        // Flip a byte inside the encrypted payload (`_s` literal) and confirm
+        // the result is NOT "42". After Plan 32 Task 4, the stage-0 wrapper
+        // also contains the _fnv_fp function, so a naive positional offset may
+        // land in the wrapper source rather than the payload.  We locate the
+        // first quoted string literal (which is always the payload) and flip a
+        // byte 40% into its body, guaranteeing we corrupt the ciphertext.
         //
-        // This is a smoke test: if the tampered byte lands on structural Lua
-        // syntax (whitespace, delimiter) it may fail to parse, which also counts
-        // as "not producing 42".
+        // The CRC check will corrupt _const_bs_seed, making every constant
+        // decrypt to garbage so the program crashes or produces wrong output.
         let src = r#"print(42)"#;
         let r = obfuscate(src, Options { seed: Some([7u8; 32]), env_binding: None }).unwrap();
-        // Flip a byte well inside the string — pick 40% through to avoid the
-        // leading Lua boilerplate and land in the encrypted bytecode region.
+
+        // Find the first quoted literal — that's the payload.
+        let bytes = r.output.as_bytes();
+        let quote_start = bytes.iter().position(|&b| b == b'"')
+            .expect("no quoted string in output") + 1;
+        let quote_end = {
+            let mut j = quote_start;
+            while j < bytes.len() {
+                if bytes[j] == b'\\' { j += 2; continue; }
+                if bytes[j] == b'"' { break; }
+                j += 1;
+            }
+            j
+        };
+        let payload_body_len = quote_end - quote_start;
+        assert!(payload_body_len > 100, "payload body too short: {}", payload_body_len);
+        // Flip bytes 30%–70% into the payload body with XOR 0xFF, corrupting a
+        // wide swath of the ciphertext (guaranteed to be inside _s and to hit
+        // opcode/bytecode/constant regions regardless of tiny program size).
+        let flip_start = quote_start + payload_body_len * 3 / 10;
+        let flip_end   = quote_start + payload_body_len * 7 / 10;
+
         let mut tampered = r.output.clone();
-        let mid = tampered.len() * 2 / 5;
-        // SAFETY: we're only flipping one byte; the resulting string may not
-        // be valid UTF-8. Use byte manipulation directly.
-        // Actually the output is Luau source (ASCII/UTF-8). Work with bytes.
-        let bytes = unsafe { tampered.as_bytes_mut() };
-        let original = bytes[mid];
-        bytes[mid] = original ^ 0x01;
+        // SAFETY: output is ASCII/UTF-8; flipping bytes may produce invalid
+        // UTF-8 but we only write it to a file, never parse it as a Rust string.
+        let tb = unsafe { tampered.as_bytes_mut() };
+        for b in &mut tb[flip_start..flip_end] {
+            *b ^= 0xFF;
+        }
+
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tampered.luau");
         std::fs::write(&path, &tampered).unwrap();

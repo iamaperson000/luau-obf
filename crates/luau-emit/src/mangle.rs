@@ -168,6 +168,8 @@ pub const MANGLE_TARGETS: &[&str] = &[
 pub const STAGE0_MANGLE_TARGETS: &[&str] = &[
     "_s", "_k", "_d", "out", "kb", "i", "b", "idx", "pos",
     "_kbase", "_bind", "_mix", "base", "bind", "bs", "k_idx",
+    // Plan 32 Task 4: FNV fingerprint key derivation.
+    "_fnv_fp", "fp", "h", "lo", "hi", "k", "s_fp", "kbase",
 ];
 
 /// Build a deterministic stage-0 mangling map: same alphabet of two-letter

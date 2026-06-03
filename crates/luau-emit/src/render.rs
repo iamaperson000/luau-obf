@@ -165,18 +165,22 @@ pub fn render(
         crate::mangle::mangle_identifiers(&stripped, &name_map)
     };
 
-    // Plan 14: encrypt the stage-1 source and wrap it in a stage-0 bootstrap.
-    // Plan 29: if a binding is present, fold the expected value into the key
-    // before encrypting so only a host that produces the right runtime value
-    // can decrypt.
+    // Plan 14 + Plan 32 Task 4: encrypt the stage-1 source and wrap it in a
+    // stage-0 bootstrap.  The effective RC4 key is derived as:
+    //   key = fnv_fingerprint(base) XOR base [XOR bind_fold if binding present]
+    // where `base` is the literal `_kbase` embedded in the wrapper.
+    // Hashing `base` (not the ciphertext) avoids the chicken-and-egg where
+    // key depends on ciphertext depends on key.
     let stage0_text = if let Some(b) = binding {
-        let folded = crate::stage0::fold_key(&stage0_key, b.expected_value.as_bytes());
-        let encrypted = crate::stage0::encrypt_payload(stage1_source.as_bytes(), &folded);
-        // Pass the BASE (unfolded) key to render_stage0 — the Luau _mix will
-        // reproduce the folded key at runtime using the runtime_expr.
+        let runtime_key = crate::stage0::derive_runtime_key(
+            &stage0_key,
+            Some(b.expected_value.as_str()),
+        );
+        let encrypted = crate::stage0::encrypt_payload(stage1_source.as_bytes(), &runtime_key);
         crate::stage0::render_stage0(&encrypted, &stage0_key, Some(b))
     } else {
-        let encrypted = crate::stage0::encrypt_payload(stage1_source.as_bytes(), &stage0_key);
+        let runtime_key = crate::stage0::derive_runtime_key(&stage0_key, None);
+        let encrypted = crate::stage0::encrypt_payload(stage1_source.as_bytes(), &runtime_key);
         crate::stage0::render_stage0(&encrypted, &stage0_key, None)
     };
 
