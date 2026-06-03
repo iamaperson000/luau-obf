@@ -942,4 +942,45 @@ mod tests {
                 seed_byte, stdout);
         }
     }
+
+    #[test]
+    fn junk_arith_changes_output() {
+        let src = "
+            local function fact(n)
+                if n <= 1 then return 1 end
+                return n * fact(n - 1)
+            end
+            print(fact(5))
+        ";
+        let a = obfuscate(src, Options { seed: Some([10u8; 32]) }).unwrap();
+        let b = obfuscate(src, Options { seed: Some([20u8; 32]) }).unwrap();
+        let c = obfuscate(src, Options { seed: Some([30u8; 32]) }).unwrap();
+        assert_ne!(a.output, b.output);
+        assert_ne!(b.output, c.output);
+        assert_ne!(a.output, c.output);
+    }
+
+    #[test]
+    fn junk_arith_preserves_semantics() {
+        let src = "
+            local function fact(n)
+                if n <= 1 then return 1 end
+                return n * fact(n - 1)
+            end
+            print(fact(5))
+        "; // 120
+        for seed_byte in [13u8, 67, 144, 222] {
+            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]) }).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("obf.luau");
+            std::fs::write(&path, &r.output).unwrap();
+            let out = std::process::Command::new("luau").arg(&path).output().unwrap();
+            assert!(out.status.success(),
+                "seed {}: luau exited {:?}; stderr: {}",
+                seed_byte, out.status, String::from_utf8_lossy(&out.stderr));
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(stdout.contains("120"),
+                "seed {}: expected '120', got: {}", seed_byte, stdout);
+        }
+    }
 }
