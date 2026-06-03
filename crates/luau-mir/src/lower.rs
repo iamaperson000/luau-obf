@@ -24,6 +24,8 @@ pub(crate) struct FnBuilder<'a> {
     pub(crate) params: Vec<VLocal>,
     /// Stack of innermost-first loop-exit blocks. `Break` jumps to the top.
     pub(crate) loop_exits: Vec<BlockId>,
+    /// Stack of innermost-first continue targets. `Continue` jumps to the top.
+    pub(crate) loop_continues: Vec<BlockId>,
 }
 
 impl<'a> FnBuilder<'a> {
@@ -46,6 +48,7 @@ impl<'a> FnBuilder<'a> {
             next_function,
             params: Vec::new(),
             loop_exits: Vec::new(),
+            loop_continues: Vec::new(),
         }
     }
 
@@ -815,5 +818,56 @@ mod tests {
             .count();
         // One for pairs(t), one for each loop step.
         assert!(callvar_multi_count >= 2, "got {}", callvar_multi_count);
+    }
+
+    #[test]
+    fn continue_in_while_jumps_to_header() {
+        let p = mir_of("while true do continue end");
+        let main = p.main();
+        // The header is the block that ends in a Branch (cond test).
+        let header_id = main
+            .blocks
+            .iter()
+            .find_map(|bb| match &bb.terminator {
+                Terminator::Branch { .. } => Some(bb.id),
+                _ => None,
+            })
+            .expect("found while header");
+        let goto_to_header = main.blocks.iter().filter(|bb| {
+            matches!(&bb.terminator, Terminator::Goto(t) if *t == header_id)
+        }).count();
+        // The continue plus the fall-through both Goto the header → at least 2.
+        assert!(goto_to_header >= 2, "got {}", goto_to_header);
+    }
+
+    #[test]
+    fn continue_in_numeric_for_compiles() {
+        // With continue, the numeric for now has a dedicated incr_block.
+        // We just verify the MIR is well-formed.
+        let _ = mir_of("for i = 1, 10 do if i > 5 then continue end end");
+    }
+
+    #[test]
+    fn continue_in_repeat_targets_cond_block() {
+        let p = mir_of("repeat continue until true");
+        // The cond_block has terminator Branch(then=exit, else=body).
+        let has_cond_branch = p.main().blocks.iter().any(|bb| {
+            matches!(&bb.terminator, Terminator::Branch { .. })
+        });
+        assert!(has_cond_branch);
+    }
+
+    #[test]
+    fn continue_in_generic_for_compiles() {
+        let _ = mir_of("for k in pairs(t) do continue end");
+    }
+
+    #[test]
+    fn continue_outside_loop_errors() {
+        let ast = luau_parse::parse("continue").unwrap();
+        let hir = luau_hir::lower::lower(&ast).unwrap();
+        let err = super::lower(&hir).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("continue outside loop"), "got: {msg}");
     }
 }

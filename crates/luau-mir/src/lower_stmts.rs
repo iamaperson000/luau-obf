@@ -130,7 +130,9 @@ fn lower_stmt(b: &mut FnBuilder, stmt: &HirStmt) -> Result<(), MirError> {
             });
             b.switch_to(body_block);
             b.loop_exits.push(exit);
+            b.loop_continues.push(header);
             lower(b, body)?;
+            b.loop_continues.pop();
             b.loop_exits.pop();
             b.set_terminator(Terminator::Goto(header));
             b.switch_to(exit);
@@ -138,12 +140,17 @@ fn lower_stmt(b: &mut FnBuilder, stmt: &HirStmt) -> Result<(), MirError> {
         }
         HirStmt::Repeat { cond, body } => {
             let body_block = b.new_block();
+            let cond_block = b.new_block();
             let exit = b.new_block();
             b.set_terminator(Terminator::Goto(body_block));
             b.switch_to(body_block);
             b.loop_exits.push(exit);
+            b.loop_continues.push(cond_block);
             lower(b, body)?;
+            b.loop_continues.pop();
             b.loop_exits.pop();
+            b.set_terminator(Terminator::Goto(cond_block));
+            b.switch_to(cond_block);
             let cond_v = b.lower_expr(cond)?;
             b.set_terminator(Terminator::Branch {
                 cond: Value::VLocal(cond_v),
@@ -173,12 +180,11 @@ fn lower_stmt(b: &mut FnBuilder, stmt: &HirStmt) -> Result<(), MirError> {
 
             let header = b.new_block();
             let body_block = b.new_block();
+            let incr_block = b.new_block();
             let exit = b.new_block();
             b.set_terminator(Terminator::Goto(header));
             b.switch_to(header);
             let cmp_dst = b.fresh_local();
-            // Plan 2: positive step only (default 1). Negative-step `for` loops
-            // require a runtime sign check on `step` — deferred to a later plan.
             b.emit(Instr::BinOp {
                 dst: cmp_dst,
                 op: luau_hir::BinOp::Le,
@@ -192,8 +198,12 @@ fn lower_stmt(b: &mut FnBuilder, stmt: &HirStmt) -> Result<(), MirError> {
             });
             b.switch_to(body_block);
             b.loop_exits.push(exit);
+            b.loop_continues.push(incr_block);
             lower(b, body)?;
+            b.loop_continues.pop();
             b.loop_exits.pop();
+            b.set_terminator(Terminator::Goto(incr_block));
+            b.switch_to(incr_block);
             let new_i = b.fresh_local();
             b.emit(Instr::BinOp {
                 dst: new_i,
@@ -244,6 +254,19 @@ fn lower_stmt(b: &mut FnBuilder, stmt: &HirStmt) -> Result<(), MirError> {
             let dead = b.new_block();
             b.switch_to(dead);
             Ok(())
+        }
+        HirStmt::Continue => {
+            let target = *b
+                .loop_continues
+                .last()
+                .ok_or_else(|| MirError::Unsupported("continue outside loop".into()))?;
+            b.set_terminator(Terminator::Goto(target));
+            let dead = b.new_block();
+            b.switch_to(dead);
+            Ok(())
+        }
+        HirStmt::CompoundAssign { .. } => {
+            Err(MirError::Unsupported("compound assign (Plan 5 Task 6)".into()))
         }
         HirStmt::IndexAssign { obj, key, value } => {
             let obj_v = b.lower_expr(obj)?;
@@ -399,7 +422,9 @@ fn lower_stmt(b: &mut FnBuilder, stmt: &HirStmt) -> Result<(), MirError> {
                 b.emit(Instr::Move { dst: slot, src: val });
             }
             b.loop_exits.push(exit);
+            b.loop_continues.push(header);
             crate::lower_stmts::lower(b, body)?;
+            b.loop_continues.pop();
             b.loop_exits.pop();
             b.set_terminator(Terminator::Goto(header));
             b.switch_to(exit);
