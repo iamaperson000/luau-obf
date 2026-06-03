@@ -71,6 +71,17 @@ pub enum UnOp {
     Len,
 }
 
+/// One position on the LHS of a multi-assignment.
+#[derive(Debug, Clone)]
+pub enum AssignTarget {
+    /// `name = …` where `name` resolved to a local or global symbol.
+    Symbol(SymbolId),
+    /// `name = …` where `name` resolved to an upvalue of the current function.
+    Upvalue(u32),
+    /// `obj[key] = …`.
+    Index { obj: HirExpr, key: HirExpr },
+}
+
 #[derive(Debug, Clone)]
 pub enum HirExpr {
     Literal(HirLiteral),
@@ -92,6 +103,10 @@ pub enum HirExpr {
     Function(HirFunction),
     /// Read this function's upvalue at the given index.
     Upvalue(u32),
+    /// `...` — the current function's varargs as a multi-value expression.
+    /// In most positions only the first value is used; in tail position of a
+    /// call/return/decl/assign expression list, all values spread.
+    Vararg,
 }
 
 #[derive(Debug, Clone)]
@@ -127,6 +142,24 @@ pub enum HirStmt {
     /// Global function declaration: `function name(args) body end`.
     /// For dotted / method declarations, lowered to IndexAssign in `lower_stmt`.
     FunctionDecl { name: SymbolId, function: HirFunction },
+    /// `return e1, e2, …, eN` with N >= 2, OR with N == 1 where the single expression
+    /// is a call or `Vararg` that should spread. (Single non-spread returns continue
+    /// to use `Return(Some(_))`.)
+    ReturnMulti(Vec<HirExpr>),
+    /// `local a, b, … = e1, e2, …` with at least one symbol position and at least
+    /// one expression. The lowerer only emits this form when the RHS may spread
+    /// (last expr is a call or `Vararg`). Equal-length non-spread RHS is lowered
+    /// as N single `LocalDecl` statements.
+    LocalDeclMulti { symbols: Vec<SymbolId>, exprs: Vec<HirExpr> },
+    /// `a, b, … = e1, e2, …`. Same rationale as `LocalDeclMulti`.
+    AssignMulti { targets: Vec<AssignTarget>, exprs: Vec<HirExpr> },
+    /// `for v1, …, vN in e1, …, eM do body end`. The lowerer enforces N >= 1
+    /// and M >= 1 (full_moon should guarantee this at parse time).
+    GenericFor {
+        vars: Vec<SymbolId>,
+        exprs: Vec<HirExpr>,
+        body: Vec<HirStmt>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -137,6 +170,9 @@ pub struct HirFunction {
     /// upvalue identifier used by `HirExpr::Upvalue` and `HirStmt::UpvalueAssign`
     /// inside this function's body.
     pub upvalues: Vec<UpvalueSource>,
+    /// True if the function declared `...` in its parameter list.
+    /// Inside the body, `HirExpr::Vararg` is only valid when this is true.
+    pub is_vararg: bool,
 }
 
 #[derive(Debug, Clone)]

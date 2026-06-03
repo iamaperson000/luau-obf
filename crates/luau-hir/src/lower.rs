@@ -692,7 +692,7 @@ fn lower_function_body_with_self(
     }
     let body = lower_block(lowerer, body.block())?;
     let frame = lowerer.exit_function();
-    Ok(HirFunction { params, body, upvalues: frame.upvalues })
+    Ok(HirFunction { params, body, upvalues: frame.upvalues, is_vararg: false })
 }
 
 #[cfg(test)]
