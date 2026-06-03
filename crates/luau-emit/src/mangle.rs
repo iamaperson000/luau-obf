@@ -163,6 +163,20 @@ pub const MANGLE_TARGETS: &[&str] = &[
     // Misc inner-loop names.
     "sources", "src", "u", "idx", "out", "i", "j", "len", "cell",
     "t", "pos", "new", "value",
+    // Plan 32 Task 6 mangle sweep: _mul32/_mul32_const body locals.
+    "a_lo", "a_hi", "b_lo", "b_hi", "mid",
+    // _decrypt parameter.
+    "enc",
+    // _tripwire and _crc32 parameter.
+    "s",
+    // read_i16 local.
+    "v",
+    // LoadConstLoadConst handler locals.
+    "a1", "b1", "a2", "b2",
+    // Call handler local.
+    "result",
+    // Dispatch loop locals.
+    "status", "val",
 ];
 
 /// Stage-0 wrapper's identifier set. These names appear in the
@@ -175,16 +189,18 @@ pub const STAGE0_MANGLE_TARGETS: &[&str] = &[
     "_fnv_fp", "fp", "h", "lo", "hi", "k", "s_fp", "kbase",
 ];
 
-/// Build a deterministic stage-0 mangling map: same alphabet of two-letter
+/// Build a deterministic stage-0 mangling map: same alphabet of three-letter
 /// suffixes as the stage-1 map, but consuming the rng separately so the
 /// stage-0 and stage-1 maps are independent.
 pub fn build_stage0_name_map(rng: &mut rand_chacha::ChaCha20Rng) -> HashMap<String, String> {
     use rand::seq::SliceRandom;
     let alphabet: Vec<char> = ('a'..='z').collect();
-    let mut suffixes: Vec<String> = Vec::with_capacity(26 * 26);
+    let mut suffixes: Vec<String> = Vec::with_capacity(26 * 26 * 26);
     for a in &alphabet {
         for b in &alphabet {
-            suffixes.push(format!("_{}{}", a, b));
+            for c in &alphabet {
+                suffixes.push(format!("_{}{}{}", a, b, c));
+            }
         }
     }
     suffixes.shuffle(rng);
@@ -195,23 +211,25 @@ pub fn build_stage0_name_map(rng: &mut rand_chacha::ChaCha20Rng) -> HashMap<Stri
     map
 }
 
-/// Build a deterministic mangling map: each source name → an opaque `_xy`-style
-/// name. Uses the rng to pick a permutation of two-letter suffixes.
+/// Build a deterministic mangling map: each source name → an opaque `_xyz`-style
+/// name. Uses the rng to pick a permutation of three-letter suffixes.
 pub fn build_name_map(rng: &mut rand_chacha::ChaCha20Rng) -> HashMap<String, String> {
     use rand::seq::SliceRandom;
-    // Generate all 26*26 = 676 two-letter suffixes.
+    // Generate all 26*26*26 = 17576 three-letter suffixes.
     let alphabet: Vec<char> = ('a'..='z').collect();
-    let mut suffixes: Vec<String> = Vec::with_capacity(26 * 26);
+    let mut suffixes: Vec<String> = Vec::with_capacity(26 * 26 * 26);
     for a in &alphabet {
         for b in &alphabet {
-            suffixes.push(format!("_{}{}", a, b));
+            for c in &alphabet {
+                suffixes.push(format!("_{}{}{}", a, b, c));
+            }
         }
     }
     suffixes.shuffle(rng);
     let mut map: HashMap<String, String> = HashMap::new();
     for (i, name) in MANGLE_TARGETS.iter().enumerate() {
         if i >= suffixes.len() {
-            // 80 names, 676 suffixes — this never trips.
+            // ~100 names, 17576 suffixes — this never trips.
             panic!("MANGLE_TARGETS exceeded suffix space");
         }
         map.insert((*name).to_string(), suffixes[i].clone());
