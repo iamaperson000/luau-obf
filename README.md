@@ -2,11 +2,11 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 7 — first per-build obfuscation transforms. Same source under
-two different `--seed` values now produces materially different obfuscated
-output: opcode bytes are renumbered per build, and each function's constant
-pool is shuffled per build. Semantics preserved; the full differential corpus
-(Plans 1–6) passes under every seed.
+**Status:** Plan 8 — string constants in the constant pool are now stored
+encrypted (XOR with per-build position-mixed key) and decrypted lazily inside
+the VM. Static inspection of the obfuscated output no longer reveals global
+names, method names, or user string literals. Plans 1–7 features unchanged;
+full corpus passes under every seed.
 
 ## Build
 
