@@ -619,6 +619,8 @@ dependencies = [
  "luau-hir",
  "luau-mir",
  "luau-parse",
+ "rand",
+ "rand_chacha",
  "thiserror",
 ]
 

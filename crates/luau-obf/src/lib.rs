@@ -246,6 +246,78 @@ mod tests {
     }
 
     #[test]
+    fn output_has_no_top_level_meta_table() {
+        let r = obfuscate("print(1)", Options { seed: Some([170u8; 32]) }).unwrap();
+        // META is a renamed identifier in Plan-9's MANGLE_TARGETS, so the literal
+        // "META" should never appear, AND no `local _xx = {` pattern that looks
+        // like a 4-tuple-per-row table should appear at the top.
+        assert!(!r.output.contains("META"));
+        // Look for the canonical META shape: `{ 0, N, 0, 0 },` lines. After Plan
+        // 11, this pattern should be absent (one occurrence is `_KA = { … }`
+        // and another is `_KB = { … }` — those are byte arrays, single row each).
+        let four_tuple_lines: usize = r.output.lines().filter(|l| {
+            // Match e.g. "    { 0, 5, 0, 0 },"
+            let t = l.trim();
+            t.starts_with("{ ") && t.ends_with("},")
+                && t.matches(',').count() == 3
+        }).count();
+        assert!(four_tuple_lines == 0,
+            "found {} suspected META rows in output", four_tuple_lines);
+    }
+
+    #[test]
+    fn output_has_no_bare_numeric_constants_in_const_pool() {
+        // Plan 11: every constant of every type is wrapped in _cw(tag, bytes).
+        // The constant pool tables should contain ONLY _cw(...) entries (or
+        // potentially nothing, if a proto has no constants).
+        let r = obfuscate(
+            "local function f(a) return a + 100 end print(f(25))",
+            Options { seed: Some([180u8; 32]) }
+        ).unwrap();
+        // The numbers 100 and 25 from the source should NOT appear as bare
+        // integers in CONSTS rows (they're encrypted as _cw(1, "...")).
+        //
+        // We restrict the search to lines that look like a const-pool row:
+        // an opening `{` followed by content, then `},`. The keystream byte
+        // arrays `_KA` / `_KB` are 32-element numeric tables — those would
+        // happen to contain bytes equal to any small integer purely by chance.
+        // We filter them out by skipping `local NAME = { ... }` lines.
+        let suspect_lines = |needle: &str| -> usize {
+            r.output.lines().filter(|l| {
+                let t = l.trim();
+                if t.starts_with("local ") { return false; }
+                // Plain const-pool row: starts with `{ ` and ends with `},`.
+                if !(t.starts_with("{ ") && t.ends_with("},")) { return false; }
+                l.contains(needle)
+            }).count()
+        };
+        let patterns_100 = [", 100,", "{ 100,", ", 100 "];
+        let patterns_25 = [", 25,", "{ 25,", ", 25 "];
+        let total_100: usize = patterns_100.iter().map(|p| suspect_lines(p)).sum();
+        assert_eq!(total_100, 0,
+            "found bare `100` in a const-pool row, expected encrypted as _cw");
+        let total_25: usize = patterns_25.iter().map(|p| suspect_lines(p)).sum();
+        assert_eq!(total_25, 0,
+            "found bare `25` in a const-pool row, expected encrypted as _cw");
+    }
+
+    #[test]
+    fn output_has_no_bare_boolean_in_const_pool() {
+        // A program with `return true` / `return false` puts those into the
+        // constant pool. After Plan 11, they're _cw(2, ...) and never appear
+        // as the bare words `true,` `false,` in a constants table.
+        let r = obfuscate(
+            "local function f() return true end print(f())",
+            Options { seed: Some([190u8; 32]) }
+        ).unwrap();
+        // Heuristic: count occurrences of `true,` or `, true,` or `{ true,`
+        // — these would be const-pool entries. After Plan 11, expected 0.
+        let bare_true: usize = r.output.matches(", true,").count()
+            + r.output.matches("{ true,").count();
+        assert_eq!(bare_true, 0, "found bare `true,` in output");
+    }
+
+    #[test]
     fn bytecode_bytes_are_not_small_opcode_set() {
         // Plan 10: bytecode bytes are XOR-encoded, so the BYTE DISTRIBUTION inside
         // any CODE entry should NOT be tightly clustered in 1..=35.
