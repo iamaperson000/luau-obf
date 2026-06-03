@@ -2,7 +2,21 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 27 — per-proto constant-pool XOR keys. Each proto in the
+**Status:** Plan 28 — RC4 stream cipher (drop-256) for stage-0. The
+stage-0 self-decrypting bootstrap previously used positional XOR
+(`b ^ key[i%32] ^ (i%256)`), which an adversary broke in ~30 lines of
+Python by bucketing ciphertext bytes by `i mod 32` and exploiting the
+known backslash-byte density of the stage-1 payload. The stage-0
+`encrypt_payload` function now runs RC4 with a 256-byte keystream drop
+(KSA then skip-256 then PRGA), and the Luau `_d(s)` wrapper in the
+emitted output mirrors this algorithm exactly. Positional structure in
+the ciphertext is destroyed: each byte's keystream contribution depends
+on the full S-box state, making the earlier bucketing attack infeasible.
+A new Rust unit test (`rc4_rust_luau_agree`) encrypts with Rust RC4 and
+decrypts with the verbatim Luau implementation to catch any
+KSA/PRGA/drop-count mismatch at the boundary.
+
+Plan 27 — per-proto constant-pool XOR keys. Each proto in the
 emitted VM now gets its own `(key_a_P, key_b_P)` 32-byte key pair derived
 from the build-time RNG, replacing the single shared `(key_a, key_b)` pair
 that all protos previously used. The VM template's `_KAS`/`_KBS`
