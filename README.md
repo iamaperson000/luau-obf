@@ -2,13 +2,15 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 14 — the entire VM (dispatcher, helpers, constant pool, bytecode)
-is now wrapped in a stage-0 self-decrypting bootstrap. The raw output file
-contains only a small XOR decryption helper, a 32-byte key, an encrypted
-payload string, and a `loadstring(decrypt(payload))(...)` invocation. A
-reader cannot statically see the dispatcher, opcode handlers, encryption
-constants, or bytecode without first executing the stage-0 decryption.
-Plans 1–13 features unchanged; full corpus passes under every seed.
+**Status:** Plan 15 — first real MIR-level obfuscation pass. Each `Sub`
+instruction is rewritten as `Neg + Add` with 50% probability per instance
+(seed-derived). The bytecode no longer 1:1 maps to source-level operators:
+a disassembler sees a mix of real `Sub` ops and `Sub`-via-`Neg+Add`
+sequences, and can't be sure from the bytecode alone which subtractions in
+the original program correspond to which. The luau-passes infrastructure
+from Plan 7 is now exercised end-to-end; subsequent plans will add more
+rewrites (Add identity-padding, Mul shifts, opaque predicates, control-flow
+flattening).
 
 ## Build
 
