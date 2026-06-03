@@ -221,7 +221,7 @@ mod tests {
     #[test]
     fn output_does_not_contain_vm_helper_names() {
         let r = obfuscate("print(1)", Options { seed: Some([88u8; 32]) }).unwrap();
-        for name in &["vm_call", "read_u16", "read_i16", "_decrypt", "_KA", "_KB"] {
+        for name in &["vm_call", "read_u16", "read_i16", "_decrypt", "_KA", "_KB", "_KAS", "_KBS"] {
             assert!(!r.output.contains(name), "found {} in output", name);
         }
     }
@@ -1153,6 +1153,29 @@ mod tests {
             assert!(out.status.success(), "seed {}: luau failed: {}", seed_byte, String::from_utf8_lossy(&out.stderr));
             let stdout = String::from_utf8_lossy(&out.stdout);
             assert!(stdout.contains("1024"), "seed {}: got {:?}", seed_byte, stdout);
+        }
+    }
+
+    #[test]
+    fn per_proto_keys_round_trips() {
+        // A program with at least 2 protos and a string-containing function.
+        let src = "
+            local function greet(n)
+                local s = \"hello \" .. n
+                return s
+            end
+            local function ten() return 10 end
+            print(greet(ten()))
+        ";
+        for seed_byte in [13u8, 73, 137, 211] {
+            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]) }).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("obf.luau");
+            std::fs::write(&path, &r.output).unwrap();
+            let out = std::process::Command::new("luau").arg(&path).output().unwrap();
+            assert!(out.status.success(), "seed {}: luau failed: {}", seed_byte, String::from_utf8_lossy(&out.stderr));
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(stdout.contains("hello 10"), "seed {}: got {:?}", seed_byte, stdout);
         }
     }
 
