@@ -2,7 +2,23 @@ use crate::opmap::OpMap;
 use luau_lir::{BlockLabel, LirFunction, LirInstr, OpKind, Operand, UpvalSource};
 use std::collections::HashMap;
 
-pub fn encode_function(f: &LirFunction, opmap: &OpMap) -> Vec<u8> {
+/// Compute the keystream byte for a single bytecode position.
+/// pc is 1-based (matches the VM's `_sbyte(code, pc)` semantics).
+pub(crate) fn keystream_byte(pc: u32, proto_id: u32, k0: u32, k1: u32) -> u8 {
+    let mixed = pc
+        .wrapping_mul(k1)
+        .wrapping_add(k0)
+        .wrapping_add(proto_id.wrapping_mul(2_654_435_761));
+    (mixed & 0xFF) as u8
+}
+
+pub fn encode_function(
+    f: &LirFunction,
+    opmap: &OpMap,
+    proto_id: u32,
+    k0: u32,
+    k1: u32,
+) -> Vec<u8> {
     let mut instr_byte_offsets: Vec<u32> = Vec::with_capacity(f.instrs.len() + 1);
     let mut offset: u32 = 0;
     let mut closure_counter: usize = 0;
@@ -68,6 +84,11 @@ pub fn encode_function(f: &LirFunction, opmap: &OpMap) -> Vec<u8> {
                 push_u16(&mut out, r.0);
             }
         }
+    }
+    // XOR every byte by its keystream (1-based pc).
+    for (i, byte) in out.iter_mut().enumerate() {
+        let pc = (i + 1) as u32;
+        *byte ^= keystream_byte(pc, proto_id, k0, k1);
     }
     out
 }
@@ -136,7 +157,7 @@ mod tests {
             build_results_values: vec![],
         };
         let opmap = OpMap::new(&[0u8; 32]);
-        let bytes = encode_function(&f, &opmap);
+        let bytes = encode_function(&f, &opmap, 0, 0, 0);
         assert_eq!(bytes.len(), 3);
         assert_eq!(bytes[0], opmap.opcode_of(OpKind::Return));
         assert_eq!(bytes[1], 0xFF);

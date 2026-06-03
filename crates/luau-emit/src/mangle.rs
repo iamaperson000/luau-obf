@@ -130,6 +130,7 @@ pub const MANGLE_TARGETS: &[&str] = &[
     "_tpack", "_xor", "_tconcat",
     // Encryption.
     "_KA", "_KB", "_decrypt", "_enc", "_const",
+    "_byte", "_k0", "_k1",
     // Tables of per-proto data.
     "CONSTS", "CODE", "META",
     // Helper functions.

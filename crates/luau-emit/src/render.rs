@@ -34,11 +34,19 @@ pub fn render(
         .map(|(i, f)| format_const_pool(&f.consts, &key_a, &key_b, i as u64))
         .collect();
 
+    use rand::RngCore;
+    let mut k_buf = [0u8; 8];
+    rng.fill_bytes(&mut k_buf);
+    let k0 = u32::from_le_bytes([k_buf[0], k_buf[1], k_buf[2], k_buf[3]]);
+    let k1 = u32::from_le_bytes([k_buf[4], k_buf[5], k_buf[6], k_buf[7]]) | 1;
+    // k1 forced odd so the keystream's `pc * k1` term varies with pc on a byte basis.
+
     let codes: Vec<String> = program
         .functions
         .iter()
-        .map(|f| {
-            let bytes = encode_function(f, opmap);
+        .enumerate()
+        .map(|(i, f)| {
+            let bytes = encode_function(f, opmap, i as u32, k0, k1);
             format!("\"{}\"", encode_luau_string_literal(&bytes))
         })
         .collect();
@@ -69,6 +77,8 @@ pub fn render(
         meta => meta,
         key_a => key_a_lit,
         key_b => key_b_lit,
+        k0 => k0,
+        k1 => k1,
     })
     .map_err(|e| EmitError::Template(e.to_string()))?;
 
