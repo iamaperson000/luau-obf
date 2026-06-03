@@ -160,6 +160,17 @@ pub enum HirStmt {
         exprs: Vec<HirExpr>,
         body: Vec<HirStmt>,
     },
+    /// `continue` — jump to the nearest enclosing loop's iteration-advance point.
+    Continue,
+    /// `target op= value` — Luau compound assignment. For Symbol/Upvalue targets,
+    /// the rule is `target = target op value`. For Index targets, `obj` and `key`
+    /// are evaluated exactly once, then the slot is read, combined, and written
+    /// back.
+    CompoundAssign {
+        target: AssignTarget,
+        op: BinOp,
+        value: HirExpr,
+    },
 }
 
 #[derive(Debug, Clone)]
