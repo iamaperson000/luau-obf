@@ -868,4 +868,35 @@ mod tests {
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(stdout.contains("5"), "expected '5' in stdout, got: {}", stdout);
     }
+
+    #[test]
+    fn const_decompose_changes_output() {
+        let src = "print(123, 456, 789, 1000, 2025)";
+        let a = obfuscate(src, Options { seed: Some([10u8; 32]) }).unwrap();
+        let b = obfuscate(src, Options { seed: Some([20u8; 32]) }).unwrap();
+        let c = obfuscate(src, Options { seed: Some([30u8; 32]) }).unwrap();
+        assert_ne!(a.output, b.output);
+        assert_ne!(b.output, c.output);
+        assert_ne!(a.output, c.output);
+    }
+
+    #[test]
+    fn const_decompose_preserves_semantics() {
+        // Sum of small constants — verify the output is exact across seeds.
+        let src = "print(1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10)";  // 55
+        for seed_byte in [11u8, 47, 99, 200] {
+            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]) }).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("obf.luau");
+            std::fs::write(&path, &r.output).unwrap();
+            let out = std::process::Command::new("luau").arg(&path).output().unwrap();
+            assert!(out.status.success(),
+                "seed {}: luau exited {:?}; stderr: {}",
+                seed_byte, out.status, String::from_utf8_lossy(&out.stderr));
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(stdout.contains("55"),
+                "seed {}: expected '55' in stdout, got: {}",
+                seed_byte, stdout);
+        }
+    }
 }
