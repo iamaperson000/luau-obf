@@ -14,80 +14,18 @@
 //! parameters, prior-block values) is conservatively NOT numeric, so the
 //! rewrite skips that Add.
 
+use crate::analysis::numeric::NumericLocals;
 use crate::Pass;
-use luau_hir::{BinOp, UnOp};
+use luau_hir::BinOp;
 use luau_mir::{ConstId, Constant, Instr, MirProgram, VLocal, Value};
 use rand::Rng;
 use rand_chacha::ChaCha20Rng;
-use std::collections::HashSet;
+
+pub struct AddIdentityPadding;
 
 const REWRITE_PERCENT: u8 = 30;
 const K_MIN: u32 = 1;
 const K_MAX: u32 = 65535;
-
-fn is_value_numeric(v: &Value, numeric: &HashSet<u32>, consts: &[Constant]) -> bool {
-    match v {
-        Value::Const(c) => matches!(consts.get(c.0 as usize), Some(Constant::Number(_))),
-        Value::VLocal(v) => numeric.contains(&v.0),
-    }
-}
-
-/// Walk one MIR instruction's effect on the "provably numeric" set: mark
-/// `dst` as numeric / not-numeric based on op semantics, or no-op for
-/// instructions without a writable VLocal.
-fn update_numeric(instr: &Instr, numeric: &mut HashSet<u32>, consts: &[Constant]) {
-    let (dst, is_num) = match instr {
-        Instr::LoadConst { dst, src } => {
-            let n = matches!(consts.get(src.0 as usize), Some(Constant::Number(_)));
-            (Some(*dst), n)
-        }
-        Instr::BinOp { dst, op, lhs, rhs } => {
-            let numeric_op = matches!(
-                op,
-                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::Pow
-            );
-            let n = numeric_op
-                && is_value_numeric(lhs, numeric, consts)
-                && is_value_numeric(rhs, numeric, consts);
-            (Some(*dst), n)
-        }
-        Instr::UnOp { dst, op, operand } => {
-            let n = match op {
-                UnOp::Len => true,
-                UnOp::Neg => is_value_numeric(operand, numeric, consts),
-                _ => false,
-            };
-            (Some(*dst), n)
-        }
-        Instr::Move { dst, src } => {
-            let n = numeric.contains(&src.0);
-            (Some(*dst), n)
-        }
-        Instr::Call { dst: Some(d), .. } | Instr::CallVar { dst: Some(d), .. } => {
-            (Some(*d), false)
-        }
-        Instr::Call { dst: None, .. } | Instr::CallVar { dst: None, .. } => (None, false),
-        Instr::GetGlobal { dst, .. } => (Some(*dst), false),
-        Instr::GetIndex { dst, .. } => (Some(*dst), false),
-        Instr::GetUpval { dst, .. } => (Some(*dst), false),
-        Instr::GetVarargs { dst } => (Some(*dst), false),
-        Instr::NewTable { dst } => (Some(*dst), false),
-        Instr::BuildResults { dst, .. } => (Some(*dst), false),
-        Instr::MakeClosure { dst, .. } => (Some(*dst), false),
-        Instr::SetGlobal { .. } | Instr::SetIndex { .. } | Instr::SetUpval { .. } => {
-            (None, false)
-        }
-    };
-    if let Some(d) = dst {
-        if is_num {
-            numeric.insert(d.0);
-        } else {
-            numeric.remove(&d.0);
-        }
-    }
-}
-
-pub struct AddIdentityPadding;
 
 impl Pass for AddIdentityPadding {
     fn name(&self) -> &'static str {
@@ -99,7 +37,7 @@ impl Pass for AddIdentityPadding {
             let mut n_locals = f.n_locals;
             let mut consts = std::mem::take(&mut f.consts);
             for block in f.blocks.iter_mut() {
-                let mut numeric: HashSet<u32> = HashSet::new();
+                let mut numeric = NumericLocals::new();
                 let mut i = 0;
                 while i < block.instrs.len() {
                     let is_add = matches!(
@@ -107,25 +45,23 @@ impl Pass for AddIdentityPadding {
                         Instr::BinOp { op: BinOp::Add, .. }
                     );
                     if !is_add {
-                        update_numeric(&block.instrs[i], &mut numeric, &consts);
+                        numeric.update(&block.instrs[i], &consts);
                         i += 1;
                         continue;
                     }
-                    // Add candidate — roll FIRST (deterministic RNG advancement).
                     let roll = rng.gen::<u8>() % 100;
                     let (dst, a, b) = match &block.instrs[i] {
                         Instr::BinOp { dst, lhs, rhs, .. } => (*dst, *lhs, *rhs),
                         _ => unreachable!(),
                     };
                     let want_rewrite = roll < REWRITE_PERCENT;
-                    let operands_numeric = is_value_numeric(&a, &numeric, &consts)
-                        && is_value_numeric(&b, &numeric, &consts);
+                    let operands_numeric = numeric.is_value_numeric(&a, &consts)
+                        && numeric.is_value_numeric(&b, &consts);
                     if !want_rewrite || !operands_numeric {
-                        update_numeric(&block.instrs[i], &mut numeric, &consts);
+                        numeric.update(&block.instrs[i], &consts);
                         i += 1;
                         continue;
                     }
-                    // Rewrite path.
                     let k = rng.gen_range(K_MIN..=K_MAX) as f64;
                     let k_const_id = ConstId(consts.len() as u32);
                     consts.push(Constant::Number(k));
@@ -161,7 +97,6 @@ impl Pass for AddIdentityPadding {
                             rhs: Value::VLocal(tmp_r),
                         },
                     );
-                    // All four new dsts (kc, tmp_l, tmp_r, dst) are numeric.
                     numeric.insert(kc.0);
                     numeric.insert(tmp_l.0);
                     numeric.insert(tmp_r.0);

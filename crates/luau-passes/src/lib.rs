@@ -7,6 +7,7 @@
 use luau_mir::MirProgram;
 use rand_chacha::ChaCha20Rng;
 
+pub mod analysis;
 pub mod identity;
 pub mod expr_mangle;
 pub mod add_padding;
