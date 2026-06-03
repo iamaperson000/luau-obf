@@ -2,14 +2,13 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 16 — Add identity-padding shipped. Each `Add` instruction
-is rewritten with 30% probability as `(a + k) + (b − k)` with a seed-derived
-integer `k`. Combined with Plan 15's `Sub → Neg + Add` rewrite, neither
-additive operator maps cleanly to a single bytecode instruction; a static
-analyser must reconstruct which arithmetic ops are real and which are
-identity padding. Subsequent plans extend the expression-mangling family
-(Mul rewrites, boolean mangling, constant decomposition) before moving to
-control-flow obfuscation (opaque predicates, junk blocks, flattening).
+**Status:** Plan 17 — Mul operand-scatter shipped. Combined with Plans 15
+(Sub→Neg+Add) and 16 (Add operand-padding), every additive and
+multiplicative MIR operator is rewritten probabilistically into a
+seed-derived synthetic expansion. The numeric-VLocal dataflow analyzer
+guards every rewrite, so programs that overload arithmetic metamethods
+remain correct. Next plans extend the family (boolean mangling, constant
+decomposition) before moving to control-flow obfuscation.
 
 ## Build
 
