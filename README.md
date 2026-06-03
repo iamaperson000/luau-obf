@@ -2,13 +2,13 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 12 — every encrypted constant is now a uniform fixed-size
-64-byte blob with the type tag and original length hidden inside the
-encrypted payload. The wrapper call site is `_cw("<bytes>")` — a single
-argument, identical-looking regardless of whether the constant is a string,
-number, boolean, or nil. The previous structural fingerprints (counting
-strings vs numbers per proto, inferring string length from ciphertext) are
-closed.
+**Status:** Plan 13 — per-proto opcode byte permutation. Each function now
+has its own permutation of the 35 opcode bytes, stored encrypted in its
+bytecode prologue. The same logical operation (e.g. ADD) is emitted as
+different bytecode bytes in different protos within the same chunk, so the
+deobfuscator must extract and apply each proto's permutation before
+disassembly. Dispatcher arm order is unchanged (deferred to a later plan).
+Full differential corpus passes under every seed.
 
 ## Build
 
