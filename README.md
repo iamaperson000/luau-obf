@@ -2,10 +2,11 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 5 — `continue`, compound assignment, and backtick string
-interpolation. The obfuscator round-trips an expanded Luau subset (Plan 4
-features + `continue` in every loop kind, `+=`/`-=`/`*=`/`/=`/`%=`/`^=`/`..=`,
-and `` `hello {expr}` ``) through a custom VM with no obfuscation passes yet.
+**Status:** Plan 6 — metatables and Luau-native runtime types. The obfuscator
+round-trips an expanded Luau subset (Plan 5 features + `setmetatable` /
+`getmetatable` / `__index` / `__newindex` / `__call` / arithmetic metamethods,
+plus the `bit32`, `buffer`, and `vector` standard modules) through a custom VM
+with no obfuscation passes yet.
 
 ## Build
 
