@@ -125,4 +125,62 @@ mod tests {
         let b = obfuscate("print(1)", Options { seed: Some([20u8; 32]) }).unwrap();
         assert_ne!(a.output, b.output);
     }
+
+    #[test]
+    fn identical_plaintext_encrypts_differently_across_protos() {
+        // The bank-style program defines "deposit" / "withdraw" as field names
+        // that recur in multiple protos. After per-proto salt, the ciphertexts
+        // should differ — we can't easily extract the ciphertexts from the
+        // rendered Luau, but we can search the output for any duplicate
+        // _enc("…") literal and assert no duplicates appear above some
+        // threshold. Practical heuristic: count `_enc(` occurrences and
+        // assert distinct argument byte sequences.
+        let src = r#"
+            local function make()
+                return {
+                    deposit = function() return "deposit" end,
+                    withdraw = function() return "withdraw" end,
+                }
+            end
+            local m = make()
+            print(m.deposit())
+            print(m.withdraw())
+        "#;
+        let r = obfuscate(src, Options { seed: Some([42u8; 32]) }).unwrap();
+        // Extract all _enc("...") payloads. After Plan 9 mangling, the
+        // `_enc` name itself is rewritten — but the call-site syntax
+        // `_xx("...")` is preserved. Search by the constant-pool form
+        // which is `<name>("...")` for each encrypted constant.
+        // Simpler: extract any quoted string literal that contains an
+        // escape sequence (which encrypted bytes almost certainly do).
+        let mut payloads: Vec<&str> = Vec::new();
+        let mut rest = r.output.as_str();
+        // We look for `("` literal pattern that's used in the encrypted
+        // constant constructor (a name followed by `("…")`).
+        while let Some(pos) = rest.find("(\"") {
+            let after = &rest[pos + 2..];
+            let mut j = 0;
+            let bytes = after.as_bytes();
+            while j < bytes.len() {
+                if bytes[j] == b'\\' && j + 1 < bytes.len() {
+                    j += 2;
+                } else if bytes[j] == b'"' {
+                    break;
+                } else {
+                    j += 1;
+                }
+            }
+            if j >= bytes.len() { break; }
+            payloads.push(&after[..j]);
+            rest = &after[j..];
+        }
+        // We expect "deposit" appears at least twice as a key in the source,
+        // and similarly "withdraw". The total number of _enc literals depends
+        // on how the compiler organizes constants. Just assert: no two
+        // payloads with length >= 7 (deposit/withdraw size) are identical.
+        let long: Vec<&&str> = payloads.iter().filter(|p| p.len() >= 7).collect();
+        let dedup: std::collections::HashSet<&&str> = long.iter().copied().collect();
+        assert_eq!(long.len(), dedup.len(),
+            "found duplicate _enc payload of length >= 7 — per-proto salt is not working");
+    }
 }

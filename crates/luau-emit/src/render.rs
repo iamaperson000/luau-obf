@@ -25,7 +25,8 @@ pub fn render(
     let consts: Vec<String> = program
         .functions
         .iter()
-        .map(|f| format_const_pool(&f.consts, &key_a, &key_b))
+        .enumerate()
+        .map(|(i, f)| format_const_pool(&f.consts, &key_a, &key_b, i as u64))
         .collect();
 
     let codes: Vec<String> = program
@@ -108,12 +109,20 @@ fn opname(k: OpKind) -> &'static str {
     }
 }
 
-fn format_const_pool(consts: &[Constant], key_a: &[u8; 32], key_b: &[u8; 32]) -> String {
-    let parts: Vec<String> = consts.iter().map(|c| format_const(c, key_a, key_b)).collect();
+fn format_const_pool(
+    consts: &[Constant],
+    key_a: &[u8; 32],
+    key_b: &[u8; 32],
+    proto_salt: u64,
+) -> String {
+    let parts: Vec<String> = consts
+        .iter()
+        .map(|c| format_const(c, key_a, key_b, proto_salt))
+        .collect();
     parts.join(", ")
 }
 
-fn format_const(c: &Constant, key_a: &[u8; 32], key_b: &[u8; 32]) -> String {
+fn format_const(c: &Constant, key_a: &[u8; 32], key_b: &[u8; 32], proto_salt: u64) -> String {
     match c {
         Constant::Nil => "nil".into(),
         Constant::Bool(true) => "true".into(),
@@ -125,7 +134,7 @@ fn format_const(c: &Constant, key_a: &[u8; 32], key_b: &[u8; 32]) -> String {
             else { format!("{}", n) }
         }
         Constant::String(s) => {
-            let enc = encrypt_string(s, key_a, key_b);
+            let enc = encrypt_string(s, key_a, key_b, proto_salt);
             format!("_enc(\"{}\")", encode_luau_string_literal(&enc))
         }
     }
@@ -140,14 +149,18 @@ pub(crate) fn derive_string_keys(rng: &mut ChaCha20Rng) -> ([u8; 32], [u8; 32]) 
     (a, b)
 }
 
-pub(crate) fn encrypt_string(plaintext: &str, key_a: &[u8; 32], key_b: &[u8; 32]) -> Vec<u8> {
+pub(crate) fn encrypt_string(
+    plaintext: &str,
+    key_a: &[u8; 32],
+    key_b: &[u8; 32],
+    proto_salt: u64,
+) -> Vec<u8> {
     let bytes = plaintext.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     for (i, b) in bytes.iter().enumerate() {
         let ka = key_a[i % 32];
         let kb = key_b[i % 32];
-        let pos = (i & 0xFF) as u8;
-        // Round 1: XOR with key_a. Round 2: XOR with position. Round 3: XOR with key_b.
+        let pos = ((i as u64).wrapping_add(proto_salt.wrapping_mul(7919)) & 0xFF) as u8;
         out.push(b ^ ka ^ pos ^ kb);
     }
     out
@@ -193,12 +206,12 @@ mod tests {
         let key_a = [42u8; 32];
         let key_b = [99u8; 32];
         let plaintext = "print";
-        let enc = encrypt_string(plaintext, &key_a, &key_b);
-        // Decrypt by re-applying the same XOR chain.
+        let proto_salt = 3u64;
+        let enc = encrypt_string(plaintext, &key_a, &key_b, proto_salt);
         let dec: Vec<u8> = enc.iter().enumerate().map(|(i, b)| {
             let ka = key_a[i % 32];
             let kb = key_b[i % 32];
-            let pos = (i & 0xFF) as u8;
+            let pos = ((i as u64).wrapping_add(proto_salt.wrapping_mul(7919)) & 0xFF) as u8;
             b ^ ka ^ pos ^ kb
         }).collect();
         assert_eq!(dec, plaintext.as_bytes());
@@ -208,13 +221,22 @@ mod tests {
     fn encrypt_changes_bytes_for_typical_input() {
         let key_a = [1u8; 32];
         let key_b = [2u8; 32];
-        let enc = encrypt_string("hello world", &key_a, &key_b);
+        let enc = encrypt_string("hello world", &key_a, &key_b, 0);
         assert_ne!(enc, b"hello world");
     }
 
     #[test]
     fn empty_string_encrypts_to_empty() {
-        let enc = encrypt_string("", &[0u8; 32], &[0u8; 32]);
+        let enc = encrypt_string("", &[0u8; 32], &[0u8; 32], 0);
         assert!(enc.is_empty());
+    }
+
+    #[test]
+    fn different_proto_salts_change_ciphertext() {
+        let key_a = [3u8; 32];
+        let key_b = [4u8; 32];
+        let e1 = encrypt_string("deposit", &key_a, &key_b, 1);
+        let e2 = encrypt_string("deposit", &key_a, &key_b, 2);
+        assert_ne!(e1, e2);
     }
 }
