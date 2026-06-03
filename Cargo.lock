@@ -600,6 +600,7 @@ dependencies = [
  "rand",
  "rand_chacha",
  "serde",
+ "tempfile",
  "thiserror",
 ]
 
@@ -645,6 +646,7 @@ dependencies = [
  "luau-passes",
  "rand",
  "rand_chacha",
+ "tempfile",
  "thiserror",
 ]
 

@@ -97,9 +97,37 @@ mod tests {
         out
     }
 
+    /// RC4 with drop-256. Mirrors encrypt_payload in luau-emit/src/stage0.rs.
+    fn rc4_decrypt(ciphertext: &[u8], key: &[u8]) -> Vec<u8> {
+        let mut s = [0u8; 256];
+        for (i, slot) in s.iter_mut().enumerate() { *slot = i as u8; }
+        let mut j: u8 = 0;
+        for i in 0..256 {
+            j = j.wrapping_add(s[i]).wrapping_add(key[i % key.len()]);
+            s.swap(i, j as usize);
+        }
+        let mut ii: u8 = 0;
+        let mut jj: u8 = 0;
+        for _ in 0..256 {
+            ii = ii.wrapping_add(1);
+            jj = jj.wrapping_add(s[ii as usize]);
+            s.swap(ii as usize, jj as usize);
+        }
+        let mut out = Vec::with_capacity(ciphertext.len());
+        for &c in ciphertext {
+            ii = ii.wrapping_add(1);
+            jj = jj.wrapping_add(s[ii as usize]);
+            s.swap(ii as usize, jj as usize);
+            let k_idx = s[ii as usize].wrapping_add(s[jj as usize]) as usize;
+            let k = s[k_idx];
+            out.push(c ^ k);
+        }
+        out
+    }
+
     /// Extract the stage-1 source from a stage-0-wrapped output. Parses the
     /// first two `local <name> = "<...>"` lines as payload and key, then
-    /// reverses the XOR encryption to recover the stage-1 Luau source.
+    /// reverses the RC4 encryption to recover the stage-1 Luau source.
     fn decrypt_stage1_from_output(output: &str) -> String {
         // Find first quoted string literal — that's the payload.
         let (payload_body, after_payload) = extract_first_quoted(output)
@@ -110,11 +138,8 @@ mod tests {
         let payload = decode_luau_string_literal_body(payload_body);
         let key = decode_luau_string_literal_body(key_body);
         assert_eq!(key.len(), 32, "stage-0 key isn't 32 bytes");
-        let plain: Vec<u8> = payload.iter().enumerate().map(|(i, b)| {
-            let k = key[i % 32];
-            let pos = (i & 0xFF) as u8;
-            b ^ k ^ pos
-        }).collect();
+        // RC4 with drop-256 (mirrors stage0.rs encrypt_payload).
+        let plain = rc4_decrypt(&payload, &key);
         String::from_utf8(plain).expect("stage-1 source is UTF-8")
     }
 
@@ -1201,6 +1226,28 @@ mod tests {
             let stdout = String::from_utf8_lossy(&out.stdout);
             assert!(stdout.contains("1024"),
                 "seed {}: expected '1024', got: {}", seed_byte, stdout);
+        }
+    }
+
+    #[test]
+    fn stage0_rc4_round_trips() {
+        let src = "
+            local function pow2(n)
+                local r = 1
+                for _ = 1, n do r = r * 2 end
+                return r
+            end
+            print(pow2(10))
+        "; // 1024
+        for seed_byte in [11u8, 22, 33, 44] {
+            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]) }).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("obf.luau");
+            std::fs::write(&path, &r.output).unwrap();
+            let out = std::process::Command::new("luau").arg(&path).output().unwrap();
+            assert!(out.status.success(), "seed {}: luau failed: {}", seed_byte, String::from_utf8_lossy(&out.stderr));
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(stdout.contains("1024"), "seed {}: got {:?}", seed_byte, stdout);
         }
     }
 }
