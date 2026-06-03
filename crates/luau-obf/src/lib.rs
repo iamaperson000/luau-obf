@@ -493,4 +493,78 @@ mod tests {
             "fewer than 30% of bytecode bytes are above 50 ({} of {}); \
              suggests XOR encoding isn't applied", above_50, bytes_found.len());
     }
+
+    #[test]
+    fn per_proto_opcode_bytes_differ() {
+        // A program with two functions that both perform an arithmetic operation.
+        // Their bytecode bytes for that operation should differ because the
+        // per-proto opcode permutations differ.
+        // We can't easily inspect "which byte is ADD in proto N" without decoding
+        // the XOR'd bytecode, but we can use a structural property:
+        //   - Each proto's CODE entry is a string literal of \NNN escapes.
+        //   - The first 40 bytes are the encrypted prologue.
+        //   - Bytes 6..40 are the encrypted inv table for that proto.
+        //   - Two protos with different inv tables -> bytes 6..40 differ.
+        let r = obfuscate(
+            "local function a(x, y) return x + y end \
+             local function b(x, y) return x + y end \
+             print(a(1, 2), b(3, 4))",
+            Options { seed: Some([244u8; 32]) }
+        ).unwrap();
+        // Extract the first two CODE entries.
+        // A CODE entry has the form: `"\NNN\NNN..."` inside the CODE table.
+        // Find all such literals and grab the first two non-empty ones.
+        let mut codes: Vec<Vec<u8>> = Vec::new();
+        let bytes = r.output.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            // Look for an opening `"` that's immediately preceded by a comma or
+            // bracket (start of a table entry).
+            if bytes[i] == b'"' {
+                // Heuristic: the CODE entries are big and start near the top.
+                // Decode \NNN escapes until closing `"`.
+                let mut j = i + 1;
+                let mut decoded: Vec<u8> = Vec::new();
+                while j < bytes.len() && bytes[j] != b'"' {
+                    if bytes[j] == b'\\' && j + 1 < bytes.len() {
+                        if bytes[j + 1].is_ascii_digit() {
+                            // \NNN form.
+                            let mut n = 0u32;
+                            let mut k = j + 1;
+                            while k < bytes.len() && bytes[k].is_ascii_digit() && k < j + 4 {
+                                n = n * 10 + (bytes[k] - b'0') as u32;
+                                k += 1;
+                            }
+                            if n <= 255 {
+                                decoded.push(n as u8);
+                            }
+                            j = k;
+                        } else {
+                            j += 2;
+                        }
+                    } else {
+                        decoded.push(bytes[j]);
+                        j += 1;
+                    }
+                }
+                // Collect entries of length >= 40 (one full prologue) and
+                // exclude the constant blob size (exactly 64 bytes). Bytecode
+                // CODE entries are always >= 40 bytes (prologue) plus at least
+                // one instruction, but small functions can land below 64.
+                if decoded.len() >= 40 && decoded.len() != 64 {
+                    codes.push(decoded);
+                }
+                i = j + 1;
+                continue;
+            }
+            i += 1;
+        }
+        assert!(codes.len() >= 2, "expected at least 2 bytecode CODE entries, got {}", codes.len());
+        // Compare the first two: bytes 5..40 (the inv-table region) must differ.
+        // We can't decrypt; just assert the encrypted bytes 5..40 are not identical.
+        let a_inv_region = &codes[0][5..40.min(codes[0].len())];
+        let b_inv_region = &codes[1][5..40.min(codes[1].len())];
+        assert_ne!(a_inv_region, b_inv_region,
+            "two protos have identical encrypted inv tables - permutation isn't varying");
+    }
 }
