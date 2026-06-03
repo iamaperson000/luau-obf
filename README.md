@@ -2,11 +2,11 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 6 — metatables and Luau-native runtime types. The obfuscator
-round-trips an expanded Luau subset (Plan 5 features + `setmetatable` /
-`getmetatable` / `__index` / `__newindex` / `__call` / arithmetic metamethods,
-plus the `bit32`, `buffer`, and `vector` standard modules) through a custom VM
-with no obfuscation passes yet.
+**Status:** Plan 7 — first per-build obfuscation transforms. Same source under
+two different `--seed` values now produces materially different obfuscated
+output: opcode bytes are renumbered per build, and each function's constant
+pool is shuffled per build. Semantics preserved; the full differential corpus
+(Plans 1–6) passes under every seed.
 
 ## Build
 
