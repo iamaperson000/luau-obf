@@ -2,7 +2,17 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 26 — live-operand junk arithmetic. Both the junk-arith
+**Status:** Plan 27 — per-proto constant-pool XOR keys. Each proto in the
+emitted VM now gets its own `(key_a_P, key_b_P)` 32-byte key pair derived
+from the build-time RNG, replacing the single shared `(key_a, key_b)` pair
+that all protos previously used. The VM template's `_KAS`/`_KBS`
+arrays-of-arrays replace the old scalar `_KA`/`_KB`, and `_decrypt` indexes
+by `proto_id`. The Round 4 adversary's cross-proto bucketing attack (bucket
+ciphertext bytes by `i mod 32` across all protos, exploit backslash density
+to recover the shared key) is defeated: each proto's buckets now reflect a
+distinct key, collapsing the attack's signal-to-noise for short protos.
+
+Plan 26: live-operand junk arithmetic. Both the junk-arith
 (Add/Mul) and junk-sub (Sub/Sub) dead-store passes now have a ~50% chance
 per injection of using a provably-numeric VLocal from earlier in the same
 block as the first BinOp's left operand, instead of always generating two
