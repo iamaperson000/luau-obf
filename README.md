@@ -2,7 +2,21 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 28 — RC4 stream cipher (drop-256) for stage-0. The
+**Status:** Plan 29 — Env-bound stage-0 key. The stage-0 decryption key
+can now be bound to a runtime environment value (e.g.
+`tostring(game.PlaceId)`) so the obfuscated blob cannot be decrypted by
+simply running the wrapper offline in a plain `luau` interpreter. At
+build time the obfuscator XOR-folds the `expected_value` into the
+cipher key; the emitted stage-0 wrapper evaluates `runtime_expr` at
+load time and reproduces the fold via a small `_mix` helper. A host
+that produces the wrong value gets garbled plaintext and `loadstring`
+fails silently. The binding is optional and off by default so the
+corpus difftest and all existing acceptance tests remain unaffected. The
+CLI gains `--env-bind-expr` / `--env-bind-expected` flags (mutual-pair
+required). Three new acceptance tests cover match, mismatch, and the
+default-off path.
+
+Previously: Plan 28 — RC4 stream cipher (drop-256) for stage-0. The
 stage-0 self-decrypting bootstrap previously used positional XOR
 (`b ^ key[i%32] ^ (i%256)`), which an adversary broke in ~30 lines of
 Python by bucketing ciphertext bytes by `i mod 32` and exploiting the
