@@ -21,6 +21,28 @@ local _tpack = table.pack or function(...)
     return t
 end
 
+-- Plan 32 Task 5: anti-trace tripwires.
+-- Cache trusted references at module load time. Any runtime monkey-patching
+-- of these globals after load is detected during vm_call and silently corrupts
+-- _const_bs_seed, causing garbled constant decryption with no visible error.
+local _trusted_pcall = pcall
+local _trusted_sbyte = string.byte
+local _trusted_xor = bit32.bxor
+local _trusted_gethook = debug and debug.gethook
+local _trusted_sethook = debug and debug.sethook
+
+-- _tripwire: takes the current seed state s (u32) and returns it, possibly
+-- XORed with a poison value if any instrumentation is detected.
+-- NEVER calls error() — silent corruption only.
+local function _tripwire(s)
+    -- Check bit32.bxor first; if hijacked, everything is garbage anyway.
+    if bit32.bxor ~= _trusted_xor then return 3735936990 end -- 0xDEADDEAD
+    if pcall ~= _trusted_pcall then s = bit32.bxor(s, 3405691582) end -- 0xCAFEBABE
+    if string.byte ~= _trusted_sbyte then s = bit32.bxor(s, 2989419759) end -- 0xB16B00AF
+    if _trusted_gethook and _trusted_gethook() ~= nil then s = bit32.bxor(s, 4275878552) end -- 0xFEEDFACE
+    return s
+end
+
 local _KAS = {
 {% for k in keys_a %}    { {{ k }} },
 {% endfor %}}
@@ -92,6 +114,9 @@ local function _cw(bytes) return { _e = bytes } end
 -- Plan 32 Task 2: _const forwards bs_seed to _decrypt so the constant cipher
 -- is tangled with the byte-cipher final state.
 local function _const(consts, idx, proto_id, bs_seed)
+    -- Plan 32 Task 5: re-check tripwire at every constant read so that
+    -- hooks installed after vm_call entry are also caught.
+    bs_seed = _xor(bs_seed, _tripwire(0))
     local c = consts[idx]
     if type(c) == "table" and c._e then
         local raw = _decrypt(c._e, proto_id, bs_seed)
@@ -173,6 +198,10 @@ vm_call = function(proto_id, args, nargs, upvals)
     if _expected_crc ~= _actual_crc then
         _const_bs_seed = _xor(_const_bs_seed, 3735928559)
     end
+
+    -- Plan 32 Task 5: mix tripwire result into seed so any instrumentation
+    -- detected at call time silently corrupts all subsequent constant reads.
+    _const_bs_seed = _xor(_const_bs_seed, _tripwire(0))
 
     -- Helpers reading from the pre-decrypted `plain` table (no LCG needed here).
     local function read_u16(_, pos, _)

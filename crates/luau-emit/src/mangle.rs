@@ -144,6 +144,9 @@ pub const MANGLE_TARGETS: &[&str] = &[
     "_mul32_const", "_const_bs_seed", "bs_seed", "mix", "salt_term", "plain_byte",
     // Plan 32 Task 3: CRC32 integrity check names.
     "_crc_table", "_crc32", "_expected_crc", "_actual_crc", "_ci", "_cc", "_crc",
+    // Plan 32 Task 5: anti-trace tripwire names.
+    "_trusted_pcall", "_trusted_sbyte", "_trusted_xor", "_trusted_gethook", "_trusted_sethook",
+    "_tripwire",
     // vm_call params and frame-locals.
     "proto_id", "args", "nargs", "upvals",
     "code", "consts", "meta", "num_params", "num_regs", "is_vararg",
