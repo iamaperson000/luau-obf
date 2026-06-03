@@ -82,6 +82,18 @@ fn visit_vlocals(instr: &luau_mir::Instr, mut f: impl FnMut(VLocal)) {
             visit_value(*callee, &mut f);
             for a in args { visit_value(*a, &mut f); }
         }
+        Instr::CallVar { dst, callee, args, spread_tail, .. } => {
+            if let Some(d) = dst { f(*d); }
+            visit_value(*callee, &mut f);
+            for a in args { visit_value(*a, &mut f); }
+            if let Some(s) = spread_tail { f(*s); }
+        }
+        Instr::BuildResults { dst, values, spread_tail } => {
+            f(*dst);
+            for v in values { visit_value(*v, &mut f); }
+            if let Some(s) = spread_tail { f(*s); }
+        }
+        Instr::GetVarargs { dst } => f(*dst),
         Instr::MakeClosure { dst, upvalues, .. } => {
             f(*dst);
             for src in upvalues {
@@ -115,6 +127,9 @@ fn visit_terminator_vlocals(t: &luau_mir::Terminator, mut f: impl FnMut(VLocal))
         }
         Terminator::Return(Some(Value::VLocal(l))) => f(*l),
         Terminator::Return(_) => {}
+        Terminator::ReturnMulti(v) => {
+            if let Value::VLocal(l) = v { f(*l); }
+        }
     }
 }
 

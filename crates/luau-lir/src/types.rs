@@ -7,6 +7,10 @@ use luau_mir::Constant;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Reg(pub u16);
 
+/// Sentinel for "no register" in operand positions (e.g., Call with no dst,
+/// CallVar with no spread tail). Encoded as a 0xFFFF u16.
+pub const NO_REG: u16 = 0xFFFF;
+
 /// Constant pool index, per function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConstIdx(pub u16);
@@ -30,6 +34,11 @@ pub enum OpKind {
     Closure,
     NewTable, GetTable, SetTable,
     GetUpval, SetUpval,
+    // Plan 4 additions:
+    CallVar,
+    BuildResults,
+    Vararg,
+    ReturnMulti,
 }
 
 #[derive(Debug, Clone)]
@@ -68,12 +77,18 @@ pub struct LirFunction {
     pub num_regs: u16,
     /// Number of upvalues this function reads. Renders into the proto meta.
     pub num_upvals: u16,
+    /// True if this function declared `...` and reads varargs from the frame.
+    pub is_vararg: bool,
     pub consts: Vec<Constant>,
     pub instrs: Vec<LirInstr>,
     pub label_positions: Vec<(BlockLabel, u32)>,
     /// Per-Closure-instruction upvalue source lists. Consumed by the encoder
     /// in order — the i-th Closure instruction's sources are at index i here.
     pub closure_upval_sources: Vec<Vec<UpvalSource>>,
+    /// Per-`BuildResults`-instruction value list. The encoder consumes these in
+    /// order — variable-length, encoded inline like `closure_upval_sources`.
+    /// Each entry is a `Vec<Operand>` containing only `Operand::Reg` items.
+    pub build_results_values: Vec<Vec<Operand>>,
 }
 
 #[derive(Debug, Clone)]

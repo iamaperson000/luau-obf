@@ -6,7 +6,7 @@ use crate::{
 };
 use luau_hir::{BinOp, UnOp};
 use luau_mir::{
-    BlockId, Instr as MInstr, MirFunction, MirProgram, Terminator, Value as MValue,
+    BlockId, CallMode, Instr as MInstr, MirFunction, MirProgram, Terminator, Value as MValue,
 };
 
 pub fn lower(mir: &MirProgram) -> Result<LirProgram, LirError> {
@@ -22,6 +22,7 @@ fn lower_function(f: &MirFunction) -> Result<LirFunction, LirError> {
     let mut instrs: Vec<LirInstr> = Vec::new();
     let mut label_positions: Vec<(BlockLabel, u32)> = Vec::new();
     let mut closure_upval_sources: Vec<Vec<UpvalSource>> = Vec::new();
+    let mut build_results_values: Vec<Vec<Operand>> = Vec::new();
 
     let label_of = |b: BlockId| BlockLabel(b.0);
 
@@ -29,16 +30,19 @@ fn lower_function(f: &MirFunction) -> Result<LirFunction, LirError> {
         .blocks
         .iter()
         .flat_map(|b| &b.instrs)
-        .filter_map(|instr| {
-            if let MInstr::Call { args, .. } = instr { Some(args.len() as u16) } else { None }
+        .filter_map(|instr| match instr {
+            MInstr::Call { args, .. } => Some(args.len() as u16),
+            MInstr::CallVar { args, .. } => Some(args.len() as u16),
+            _ => None,
         })
         .max()
         .unwrap_or(0);
 
     let scratch_base: u16 = rm.num_regs();
-    let final_num_regs: u16 = if max_call_args > 0
-        || f.blocks.iter().flat_map(|b| &b.instrs).any(|i| matches!(i, MInstr::Call { .. }))
-    {
+    let has_any_call = f.blocks.iter().flat_map(|b| &b.instrs).any(|i| {
+        matches!(i, MInstr::Call { .. } | MInstr::CallVar { .. })
+    });
+    let final_num_regs: u16 = if has_any_call || max_call_args > 0 {
         scratch_base + 1 + max_call_args
     } else {
         rm.num_regs()
@@ -48,7 +52,14 @@ fn lower_function(f: &MirFunction) -> Result<LirFunction, LirError> {
         label_positions.push((label_of(block.id), instrs.len() as u32));
 
         for instr in &block.instrs {
-            lower_instr(instr, &rm, scratch_base, &mut instrs, &mut closure_upval_sources);
+            lower_instr(
+                instr,
+                &rm,
+                scratch_base,
+                &mut instrs,
+                &mut closure_upval_sources,
+                &mut build_results_values,
+            );
         }
 
         let next_block = f.blocks.get(idx + 1).map(|b| b.id);
@@ -60,10 +71,12 @@ fn lower_function(f: &MirFunction) -> Result<LirFunction, LirError> {
         num_params: f.params.len() as u16,
         num_regs: final_num_regs,
         num_upvals: f.upvalues.len() as u16,
+        is_vararg: f.is_vararg,
         consts: f.consts.clone(),
         instrs,
         label_positions,
         closure_upval_sources,
+        build_results_values,
     })
 }
 
@@ -82,6 +95,7 @@ fn lower_instr(
     scratch_base: u16,
     out: &mut Vec<LirInstr>,
     closure_upval_sources: &mut Vec<Vec<UpvalSource>>,
+    build_results_values: &mut Vec<Vec<Operand>>,
 ) {
     match instr {
         MInstr::LoadConst { dst, src } => {
@@ -215,6 +229,73 @@ fn lower_instr(
                 ],
             });
         }
+        MInstr::CallVar { dst, callee, args, spread_tail, mode } => {
+            let callee_src = val_to_reg(*callee, rm);
+            let n = args.len() as u16;
+            let scratch_callee = Reg(scratch_base);
+            if scratch_callee != callee_src {
+                out.push(LirInstr {
+                    op: OpKind::Move,
+                    operands: vec![Operand::Reg(scratch_callee), Operand::Reg(callee_src)],
+                });
+            }
+            for (i, a) in args.iter().enumerate() {
+                let src = val_to_reg(*a, rm);
+                let target = Reg(scratch_base + 1 + i as u16);
+                if target != src {
+                    out.push(LirInstr {
+                        op: OpKind::Move,
+                        operands: vec![Operand::Reg(target), Operand::Reg(src)],
+                    });
+                }
+            }
+            let spread_reg = match spread_tail {
+                Some(v) => Reg(rm.get(*v)).0,
+                None => crate::NO_REG,
+            };
+            let mode_byte: i16 = match mode {
+                CallMode::None => 0,
+                CallMode::Scalar => 1,
+                CallMode::Multi => 2,
+            };
+            let dst_reg = match dst {
+                Some(d) => Reg(rm.get(*d)),
+                None => Reg(crate::NO_REG),
+            };
+            out.push(LirInstr {
+                op: OpKind::CallVar,
+                operands: vec![
+                    Operand::Reg(dst_reg),
+                    Operand::Reg(scratch_callee),
+                    Operand::SmallInt(n as i16),
+                    Operand::Reg(Reg(spread_reg)),
+                    Operand::SmallInt(mode_byte),
+                ],
+            });
+        }
+        MInstr::BuildResults { dst, values, spread_tail } => {
+            let val_ops: Vec<Operand> = values.iter().map(|v| Operand::Reg(val_to_reg(*v, rm))).collect();
+            build_results_values.push(val_ops);
+            let br_idx = (build_results_values.len() - 1) as i16;
+            let spread_reg = match spread_tail {
+                Some(v) => Reg(rm.get(*v)).0,
+                None => crate::NO_REG,
+            };
+            out.push(LirInstr {
+                op: OpKind::BuildResults,
+                operands: vec![
+                    Operand::Reg(Reg(rm.get(*dst))),
+                    Operand::Reg(Reg(spread_reg)),
+                    Operand::SmallInt(br_idx),
+                ],
+            });
+        }
+        MInstr::GetVarargs { dst } => {
+            out.push(LirInstr {
+                op: OpKind::Vararg,
+                operands: vec![Operand::Reg(Reg(rm.get(*dst)))],
+            });
+        }
         MInstr::NewTable { dst } => {
             out.push(LirInstr {
                 op: OpKind::NewTable,
@@ -321,6 +402,16 @@ fn lower_terminator(
                 operands: vec![Operand::Reg(Reg(0xFFFF))],
             });
         }
+        Terminator::ReturnMulti(v) => {
+            let r = match v {
+                MValue::VLocal(l) => Reg(rm.get(*l)),
+                MValue::Const(_) => panic!("ReturnMulti Const"),
+            };
+            out.push(LirInstr {
+                op: OpKind::ReturnMulti,
+                operands: vec![Operand::Reg(r)],
+            });
+        }
     }
 }
 
@@ -395,6 +486,39 @@ print(y)
         assert!(ops.contains(&OpKind::SetTable));
         assert!(ops.contains(&OpKind::GetTable));
         assert!(ops.contains(&OpKind::Call));
+    }
+
+    #[test]
+    fn multi_return_lowers_to_return_multi_op() {
+        let p = lir_of("function f() return 1, 2 end");
+        let f = &p.functions[1];
+        let has_rm = f.instrs.iter().any(|i| i.op == OpKind::ReturnMulti);
+        assert!(has_rm);
+    }
+
+    #[test]
+    fn build_results_records_value_list() {
+        let p = lir_of("function f() return 1, 2, 3 end");
+        let f = &p.functions[1];
+        assert!(!f.build_results_values.is_empty());
+        // The BuildResults for `1, 2, 3` should have 3 values.
+        assert!(f.build_results_values.iter().any(|v| v.len() == 3));
+    }
+
+    #[test]
+    fn vararg_function_sets_is_vararg() {
+        let p = lir_of("local f = function(...) end");
+        // f is functions[1]; main is functions[0].
+        let f = &p.functions[1];
+        assert!(f.is_vararg);
+    }
+
+    #[test]
+    fn generic_for_uses_callvar_op() {
+        let p = lir_of("for k in pairs(t) do x = k end");
+        let main = &p.functions[0];
+        let has_callvar = main.instrs.iter().any(|i| i.op == OpKind::CallVar);
+        assert!(has_callvar);
     }
 
     #[test]
