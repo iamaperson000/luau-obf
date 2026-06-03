@@ -1028,6 +1028,49 @@ mod tests {
     }
 
     #[test]
+    fn synth_move_changes_output() {
+        let src = "
+            local function tri(n)
+                local s = 0
+                for i = 1, n do s = s + i end
+                return s
+            end
+            print(tri(10))
+        ";
+        let a = obfuscate(src, Options { seed: Some([10u8; 32]) }).unwrap();
+        let b = obfuscate(src, Options { seed: Some([20u8; 32]) }).unwrap();
+        let c = obfuscate(src, Options { seed: Some([30u8; 32]) }).unwrap();
+        assert_ne!(a.output, b.output);
+        assert_ne!(b.output, c.output);
+        assert_ne!(a.output, c.output);
+    }
+
+    #[test]
+    fn synth_move_preserves_semantics() {
+        let src = "
+            local function tri(n)
+                local s = 0
+                for i = 1, n do s = s + i end
+                return s
+            end
+            print(tri(10))
+        "; // 55
+        for seed_byte in [16u8, 90, 170, 252] {
+            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]) }).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("obf.luau");
+            std::fs::write(&path, &r.output).unwrap();
+            let out = std::process::Command::new("luau").arg(&path).output().unwrap();
+            assert!(out.status.success(),
+                "seed {}: luau exited {:?}; stderr: {}",
+                seed_byte, out.status, String::from_utf8_lossy(&out.stderr));
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(stdout.contains("55"),
+                "seed {}: expected '55', got: {}", seed_byte, stdout);
+        }
+    }
+
+    #[test]
     fn goto_trampoline_changes_output() {
         let src = "
             local total = 0
