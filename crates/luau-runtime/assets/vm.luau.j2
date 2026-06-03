@@ -241,7 +241,7 @@ vm_call = function(proto_id, args, nargs, upvals)
                 local payload = read_u16(code, pc); pc = pc + 2
                 if kind == 0 then
                     -- LocalReg: build a cell referencing current frame's regs.
-                    new_upvals[u] = { tbl = regs, key = payload }
+                    new_upvals[u] = { _t = regs, _k = payload }
                 else
                     -- ParentUpval: share the existing cell from this frame's upvals.
                     new_upvals[u] = upvals[payload + 1]
@@ -270,12 +270,12 @@ vm_call = function(proto_id, args, nargs, upvals)
             local a = read_u16(code, pc); pc = pc + 2
             local idx = read_u16(code, pc); pc = pc + 2
             local cell = upvals[idx + 1]
-            regs[a] = cell.tbl[cell.key]
+            regs[a] = cell._t[cell._k]
         elseif op == OP_SetUpval then
             local idx = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
             local cell = upvals[idx + 1]
-            cell.tbl[cell.key] = regs[b]
+            cell._t[cell._k] = regs[b]
         elseif op == OP_CallVar then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2

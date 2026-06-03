@@ -55,7 +55,7 @@ pub fn render(
     env.add_template("vm", luau_runtime::VM_TEMPLATE)
         .map_err(|e| EmitError::Template(e.to_string()))?;
     let tmpl = env.get_template("vm").unwrap();
-    tmpl.render(minijinja::context! {
+    let output = tmpl.render(minijinja::context! {
         opcodes => opcodes,
         consts => consts,
         codes => codes,
@@ -63,7 +63,12 @@ pub fn render(
         key_a => key_a_lit,
         key_b => key_b_lit,
     })
-    .map_err(|e| EmitError::Template(e.to_string()))
+    .map_err(|e| EmitError::Template(e.to_string()))?;
+
+    let stripped = crate::mangle::strip_comments(&output);
+    let name_map = crate::mangle::build_name_map(rng);
+    let mangled = crate::mangle::mangle_identifiers(&stripped, &name_map);
+    Ok(mangled)
 }
 
 #[derive(Serialize)]

@@ -59,7 +59,10 @@ mod tests {
     #[test]
     fn obfuscate_empty() {
         let r = obfuscate("", Options::default()).unwrap();
-        assert!(r.output.contains("vm_call"));
+        // After Plan 9 mangling, internal names are opaque. Just confirm
+        // the output is a non-trivial Luau program.
+        assert!(r.output.contains("return"));
+        assert!(r.output.len() > 200);
         assert_eq!(r.seed_used.len(), 32);
     }
 
@@ -67,7 +70,10 @@ mod tests {
     fn obfuscate_simple_print() {
         let r = obfuscate("print(1)", Options { seed: Some([1u8; 32]) }).unwrap();
         assert_eq!(r.seed_used, [1u8; 32]);
-        assert!(r.output.contains("OP_GetGlobal"));
+        // After Plan 9 mangling, opcode names are opaque. Sanity-check
+        // that "print" doesn't leak as a plaintext string literal.
+        assert!(!r.output.contains("\"print\""));
+        assert!(r.output.len() > 200);
     }
 
     #[test]
@@ -99,16 +105,16 @@ mod tests {
     #[test]
     fn output_does_not_contain_plaintext_global_name() {
         // Cardinal test: "print" must NOT appear in the obfuscated output.
-        // Compile a program that uses print; the output should contain _enc(...)
-        // and NOT the literal string "print" inside a Luau string literal.
+        // Compile a program that uses print; the output should NOT contain
+        // the literal string "print" inside a Luau string literal.
         let r = obfuscate("print(\"hello\")", Options { seed: Some([55u8; 32]) }).unwrap();
         // We allow the substring "print" to appear in things like comments or
         // template scaffolding; what we forbid is a Luau string literal
         // containing the word print. Check that no `"print"` substring exists.
         assert!(!r.output.contains("\"print\""), "found plaintext \"print\" in output");
         assert!(!r.output.contains("'print'"), "found plaintext 'print' in output");
-        // Sanity: confirm the encrypted-string marker IS present.
-        assert!(r.output.contains("_enc("), "expected _enc(...) marker in output");
+        // Also the literal "hello" should be encrypted.
+        assert!(!r.output.contains("\"hello\""), "found plaintext \"hello\" in output");
     }
 
     #[test]

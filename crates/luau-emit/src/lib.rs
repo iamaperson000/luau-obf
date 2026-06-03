@@ -44,14 +44,20 @@ mod tests {
     #[test]
     fn empty_source_emits_a_valid_chunk() {
         let chunk = compile_to_luau("");
-        assert!(chunk.contains("vm_call"));
-        assert!(chunk.contains("OP_Return"));
+        // After Plan 9 mangling, internal names are opaque. Just confirm the
+        // chunk is a non-trivial Luau program with a return statement.
+        assert!(chunk.contains("return"));
+        assert!(chunk.len() > 200);
     }
 
     #[test]
     fn print_one_emits_call_and_get_global() {
         let chunk = compile_to_luau("print(1)");
-        assert!(chunk.contains("OP_Call"));
-        assert!(chunk.contains("OP_GetGlobal"));
+        // After Plan 9 mangling, opcode and helper names are opaque.
+        // Sanity-check that the chunk renders successfully and that the
+        // encrypted form of the "print" global name does not leak as a
+        // plaintext Luau string literal.
+        assert!(!chunk.contains("\"print\""));
+        assert!(chunk.len() > 200);
     }
 }

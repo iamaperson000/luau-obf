@@ -18,7 +18,10 @@ fn cli_obfuscates_simple_program() {
         .success();
 
     let out = fs::read_to_string(&output).unwrap();
-    assert!(out.contains("vm_call"));
+    // After Plan 9 mangling, internal names are opaque. Just confirm the
+    // output is a non-trivial Luau program with a top-level return.
+    assert!(out.contains("return"));
+    assert!(out.len() > 200);
 }
 
 #[test]
