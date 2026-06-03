@@ -142,6 +142,8 @@ pub const MANGLE_TARGETS: &[&str] = &[
     "handle_group_a", "handle_group_b", "handle_group_c",
     // Plan 32 Task 2: tangled constant cipher names.
     "_mul32_const", "_const_bs_seed", "bs_seed", "mix", "salt_term", "plain_byte",
+    // Plan 32 Task 3: CRC32 integrity check names.
+    "_crc_table", "_crc32", "_expected_crc", "_actual_crc", "_ci", "_cc", "_crc",
     // vm_call params and frame-locals.
     "proto_id", "args", "nargs", "upvals",
     "code", "consts", "meta", "num_params", "num_regs", "is_vararg",

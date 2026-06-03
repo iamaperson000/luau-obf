@@ -1326,6 +1326,57 @@ mod tests {
         }
     }
 
+    // ── Plan 32 Task 3 acceptance tests ──────────────────────────────────────
+
+    #[test]
+    fn crc32_integrity_check_normal_output_runs() {
+        // Verify that a legitimately obfuscated program still executes correctly
+        // (i.e., the CRC check passes for an untampered bytecode string).
+        let src = r#"print(42)"#;
+        let r = obfuscate(src, Options { seed: Some([7u8; 32]), env_binding: None }).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("normal.luau");
+        std::fs::write(&path, &r.output).unwrap();
+        let out = std::process::Command::new("luau").arg(&path).output().unwrap();
+        assert!(out.status.success(), "normal run failed: {}", String::from_utf8_lossy(&out.stderr));
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("42"), "expected 42 in output, got: {stdout}");
+    }
+
+    #[test]
+    fn tampering_with_bytecode_breaks_output() {
+        // Flip a byte in the middle of the obfuscated output and confirm the
+        // result is NOT "42". The CRC check will corrupt _const_bs_seed, making
+        // every constant decrypt to garbage so the program crashes or misbehaves.
+        //
+        // This is a smoke test: if the tampered byte lands on structural Lua
+        // syntax (whitespace, delimiter) it may fail to parse, which also counts
+        // as "not producing 42".
+        let src = r#"print(42)"#;
+        let r = obfuscate(src, Options { seed: Some([7u8; 32]), env_binding: None }).unwrap();
+        // Flip a byte well inside the string — pick 40% through to avoid the
+        // leading Lua boilerplate and land in the encrypted bytecode region.
+        let mut tampered = r.output.clone();
+        let mid = tampered.len() * 2 / 5;
+        // SAFETY: we're only flipping one byte; the resulting string may not
+        // be valid UTF-8. Use byte manipulation directly.
+        // Actually the output is Luau source (ASCII/UTF-8). Work with bytes.
+        let bytes = unsafe { tampered.as_bytes_mut() };
+        let original = bytes[mid];
+        bytes[mid] = original ^ 0x01;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tampered.luau");
+        std::fs::write(&path, &tampered).unwrap();
+        let out = std::process::Command::new("luau").arg(&path).output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        // Either it fails to run OR it doesn't produce "42".
+        assert!(
+            !stdout.trim().eq("42"),
+            "tampering should have broken output; got status={:?}, stdout={:?}",
+            out.status, stdout
+        );
+    }
+
     #[test]
     fn dispatcher_split_round_trips() {
         let src = "

@@ -4,6 +4,21 @@ use rand::seq::SliceRandom;
 use rand::Rng;
 use std::collections::HashMap;
 
+/// Standard CRC32 with reversed polynomial 0xEDB88320.
+/// Initial value 0xFFFFFFFF, final XOR 0xFFFFFFFF.
+/// Computed over the raw (encrypted) bytecode bytes.
+pub(crate) fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFFFFFF;
+    for &b in bytes {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xEDB88320 & mask);
+        }
+    }
+    !crc
+}
+
 /// Initialize the stateful LCG keystream `bs` for a given proto.
 /// bs_init(pid) = (pid + 1) * 2654435761 + k0  (mod 2^32)
 #[inline]
@@ -50,10 +65,14 @@ pub(crate) fn make_opcode_permutation(
 
 /// Encode and encrypt a LIR function's bytecode.
 ///
-/// Returns `(encrypted_bytes, bs_final)` where `bs_final` is the LCG state
-/// after consuming every encrypted byte. This value is used by the constant
-/// cipher to bind each proto's constant pool to its byte-cipher's final state,
-/// making static decryption require a full LCG simulation first (Plan 32 Task 2).
+/// Returns `(encrypted_bytes, bs_final, crc)` where:
+/// - `bs_final` is the LCG state after consuming every encrypted byte
+///   (Plan 32 Task 2: used to tangle the constant-pool cipher).
+/// - `crc` is the CRC32 of the encrypted bytecode bytes (Plan 32 Task 3:
+///   stored as constant slot 0; checked at vm_call entry for integrity).
+///
+/// Constant operands (`Operand::Const(c)`) are emitted as `c.0 + 1` so that
+/// slot 0 in every proto's constant pool is reserved for the CRC32 value.
 pub fn encode_function(
     f: &LirFunction,
     opmap: &OpMap,
@@ -63,7 +82,7 @@ pub fn encode_function(
     perm: &[u8],
     inv: &[u8],
     rng: &mut rand_chacha::ChaCha20Rng,
-) -> (Vec<u8>, u32) {
+) -> (Vec<u8>, u32, u32) {
     // Prologue: num_params:u8, num_regs:u16_le, num_upvals:u8, is_vararg:u8,
     // then N bytes of inverse opcode permutation (raw_byte → canonical_byte),
     // where N = inv.len() = ALL_OPS.len() (36 after Plan 30).
@@ -179,7 +198,11 @@ pub fn encode_function(
         for operand in &instr.operands {
             match operand {
                 Operand::Reg(r) => push_u16(&mut out, r.0),
-                Operand::Const(c) => push_u16(&mut out, c.0),
+                // +1: slot 0 in every proto's constant pool is reserved for the
+                // CRC32 integrity value (Plan 32 Task 3). LIR const indices are
+                // 0-based; the Luau runtime table is 1-based with CRC at [1],
+                // so user const N ends up at consts[N+2] (handler adds +1 more).
+                Operand::Const(c) => push_u16(&mut out, c.0 + 1),
                 Operand::Proto(p) => push_u16(&mut out, p.0),
                 Operand::SmallInt(n) => push_u16(&mut out, *n as u16),
                 Operand::UpvalIdx(u) => push_u16(&mut out, *u),
@@ -227,10 +250,11 @@ pub fn encode_function(
         *byte ^= ks;
         bs = new_bs;
     }
-    // Return both the encrypted bytecode and the final LCG state (`bs_final`).
-    // `bs_final` is used by render.rs to tangle the constant-pool cipher with
-    // the byte-cipher (Plan 32 Task 2).
-    (out, bs)
+    // CRC32 of the encrypted bytecode (Plan 32 Task 3). Stored as constant slot 0.
+    // Computed AFTER XOR encryption so tampering with `out` changes the CRC.
+    let crc = crc32(&out);
+    // Return encrypted bytes, final LCG state, and CRC.
+    (out, bs, crc)
 }
 
 /// Push a single operand as a u16. Used for LCLC superop operands which are
@@ -238,7 +262,8 @@ pub fn encode_function(
 fn push_operand_simple(out: &mut Vec<u8>, op: &Operand) {
     let v: u16 = match op {
         Operand::Reg(r) => r.0,
-        Operand::Const(c) => c.0,
+        // +1: same CRC slot-0 reservation as the main operand loop (Task 3).
+        Operand::Const(c) => c.0 + 1,
         Operand::Proto(p) => p.0,
         Operand::SmallInt(n) => *n as u16,
         Operand::UpvalIdx(u) => *u,
@@ -321,7 +346,7 @@ mod tests {
         let perm: Vec<u8> = (1..=n_ops as u8).collect();
         let inv = perm.clone(); // identity permutation is self-inverse
         let mut rng = make_rng();
-        let (bytes, _bs_final) = encode_function(&f, &opmap, 0, 0, 0, &perm, &inv, &mut rng);
+        let (bytes, _bs_final, _crc) = encode_function(&f, &opmap, 0, 0, 0, &perm, &inv, &mut rng);
         // 5-byte META + 36-byte inv + 1 opcode byte + 2 operand bytes = 44.
         assert_eq!(bytes.len(), 44);
         // With the stateful LCG, bytes are encrypted even with k0=k1=pid=0.
@@ -398,7 +423,7 @@ mod tests {
         let perm: Vec<u8> = (1..=n_ops as u8).collect();
         let inv = perm.clone();
         let mut rng = rand_chacha::ChaCha20Rng::from_seed([0u8; 32]);
-        let (bytes, _bs_final) = encode_function(&f, &opmap, 0, 0, 0, &perm, &inv, &mut rng);
+        let (bytes, _bs_final, _crc) = encode_function(&f, &opmap, 0, 0, 0, &perm, &inv, &mut rng);
         // Prologue = 5 + 36 = 41 bytes.
         // LCLC: 1 + 8 = 9 bytes.
         // LC:   1 + 4 = 5 bytes.
@@ -501,5 +526,58 @@ print(table.concat(hex))
             luau_hex, expected_hex,
             "Luau decryption did not recover plaintext — encoder/decoder out of sync"
         );
+    }
+
+    // ── Plan 32 Task 3: CRC32 unit tests ─────────────────────────────────────
+
+    #[test]
+    fn crc32_known_vectors() {
+        assert_eq!(crc32(b""), 0);
+        assert_eq!(crc32(b"a"), 0xE8B7BE43);
+        assert_eq!(crc32(b"abc"), 0x352441C2);
+        assert_eq!(crc32(b"hello world"), 0x0D4A1185);
+    }
+
+    #[test]
+    fn rust_luau_crc32_agree() {
+        let inputs: Vec<&[u8]> = vec![b"", b"a", b"abc", b"hello world", b"\x00\x01\x02\xff\xfe"];
+        for input in inputs {
+            let rust_crc = crc32(input);
+            let input_lit = encode_luau_string_literal(input);
+            let luau = format!(
+                r#"local _xor = bit32.bxor
+local _sbyte = string.byte
+local _floor = math.floor
+local _crc_table = {{}}
+do
+    for i = 0, 255 do
+        local c = i
+        for _ = 1, 8 do
+            if c % 2 == 1 then c = _xor(_floor(c / 2), 3988292384)
+            else c = _floor(c / 2) end
+        end
+        _crc_table[i] = c
+    end
+end
+local function _crc32(s)
+    local crc = 4294967295
+    for i = 1, #s do
+        crc = _xor(_floor(crc / 256), _crc_table[_xor(crc % 256, _sbyte(s, i))])
+    end
+    return _xor(crc, 4294967295)
+end
+print(_crc32("{input_lit}"))
+"#,
+                input_lit = input_lit,
+            );
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("t.luau");
+            std::fs::write(&path, luau).unwrap();
+            let out = std::process::Command::new("luau").arg(&path).output().unwrap();
+            assert!(out.status.success(), "luau failed: {}", String::from_utf8_lossy(&out.stderr));
+            let luau_crc: u32 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
+            assert_eq!(rust_crc, luau_crc,
+                "input {:?}: rust=0x{:x} luau=0x{:x}", input, rust_crc, luau_crc);
+        }
     }
 }

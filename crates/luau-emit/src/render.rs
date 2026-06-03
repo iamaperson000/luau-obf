@@ -112,24 +112,33 @@ pub fn render(
             .map(|_| crate::encode::make_opcode_permutation(n_ops, rng))
             .collect();
 
-        // Plan 30 / Plan 32 Task 2: encode_function now returns (bytes, bs_final).
+        // Plan 30 / Plan 32 Task 2+3: encode_function returns (bytes, bs_final, crc).
         // bs_final is the LCG state after consuming all encrypted bytecode bytes.
-        // It is used as the seed for the constant-pool cipher so that decrypting
-        // constants requires simulating the LCG through the bytecode first.
+        // crc is the CRC32 of the encrypted bytecode (Plan 32 Task 3: stored as
+        // constant slot 0 so the VM can verify bytecode integrity at entry).
         let mut codes: Vec<String> = Vec::with_capacity(program.functions.len());
         let mut bs_finals: Vec<u32> = Vec::with_capacity(program.functions.len());
+        let mut crcs: Vec<u32> = Vec::with_capacity(program.functions.len());
         for (i, f) in program.functions.iter().enumerate() {
             let (perm, inv) = &perms_and_invs[i];
-            let (bytes, bs_final) = encode_function(f, opmap, i as u32, k0, k1, perm, inv, rng);
+            let (bytes, bs_final, crc) = encode_function(f, opmap, i as u32, k0, k1, perm, inv, rng);
             codes.push(format!("\"{}\"", encode_luau_string_literal(&bytes)));
             bs_finals.push(bs_final);
+            crcs.push(crc);
         }
 
         // Now build constant pools, seeded by each proto's bs_final.
+        // Plan 32 Task 3: prepend a CRC32 constant (slot 0) to every proto's pool.
+        // LIR-level Operand::Const(c) references are emitted as c.0+1 by the
+        // encoder, so slot 0 is invisible to user code.
         let mut consts: Vec<String> = Vec::with_capacity(program.functions.len());
         for (i, f) in program.functions.iter().enumerate() {
             let (ka, kb) = &per_proto_keys[i];
-            consts.push(format_const_pool(&f.consts, ka, kb, i as u64, bs_finals[i], rng)?);
+            // Prepend the CRC constant at slot 0.
+            let crc_const = Constant::Number(crcs[i] as f64);
+            let mut full_consts = vec![crc_const];
+            full_consts.extend_from_slice(&f.consts);
+            consts.push(format_const_pool(&full_consts, ka, kb, i as u64, bs_finals[i], rng)?);
         }
 
         let keys_a_lits: Vec<String> = per_proto_keys.iter().map(|(a, _)| format_byte_array_literal(a)).collect();

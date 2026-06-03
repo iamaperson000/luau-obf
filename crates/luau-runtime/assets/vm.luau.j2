@@ -31,6 +31,31 @@ local _KBS = {
 local _k0 = {{ k0 }}
 local _k1 = {{ k1 }}
 
+-- Plan 32 Task 3: CRC32 lookup table (precomputed once at load time).
+-- Polynomial 0xEDB88320 (reversed), matching the Rust crc32() implementation.
+local _crc_table = {}
+do
+    for _ci = 0, 255 do
+        local _cc = _ci
+        for _ = 1, 8 do
+            if _cc % 2 == 1 then
+                _cc = _xor(_floor(_cc / 2), 3988292384)
+            else
+                _cc = _floor(_cc / 2)
+            end
+        end
+        _crc_table[_ci] = _cc
+    end
+end
+
+local function _crc32(s)
+    local _crc = 4294967295
+    for _ci = 1, #s do
+        _crc = _xor(_floor(_crc / 256), _crc_table[_xor(_crc % 256, _sbyte(s, _ci))])
+    end
+    return _xor(_crc, 4294967295)
+end
+
 -- _mul32: compute (a * b) % 2^32 avoiding IEEE-754 double precision loss.
 -- Reused from the byte-cipher; defined at module scope for _decrypt use.
 local function _mul32_const(a, b)
@@ -136,6 +161,18 @@ vm_call = function(proto_id, args, nargs, upvals)
     -- Plan 32 Task 2: after the pre-decryption pass, _bs holds the byte-cipher's
     -- final LCG state. Save it as the seed for the constant-pool cipher.
     local _const_bs_seed = _bs
+
+    -- Plan 32 Task 3: bytecode integrity check.
+    -- Constant slot 1 (Lua 1-based) holds the expected CRC32 of the encrypted
+    -- bytecode, stored there by the Rust encoder. Compute the actual CRC over
+    -- `code` (the ciphertext, not the plaintext) and compare. On mismatch,
+    -- silently corrupt _const_bs_seed so that all subsequent constant reads
+    -- decrypt to garbage — no error() call, no visible crash at entry.
+    local _expected_crc = _const(consts, 1, proto_id, _const_bs_seed)
+    local _actual_crc = _crc32(code)
+    if _expected_crc ~= _actual_crc then
+        _const_bs_seed = _xor(_const_bs_seed, 3735928559)
+    end
 
     -- Helpers reading from the pre-decrypted `plain` table (no LCG needed here).
     local function read_u16(_, pos, _)
