@@ -1,14 +1,25 @@
 //! Junk-Sub-Chain pass — for each `BasicBlock`, with 20% probability,
-//! inserts a 4-instruction dead-store chain at a seed-determined position:
+//! inserts a dead-store chain at a seed-determined position.
 //!
+//! **Mode 0** (original, ~50% of injections):
 //!   δ1_vl = LoadConst(δ1)
 //!   δ2_vl = LoadConst(δ2)
 //!   tmp1  = Sub(δ1_vl, δ2_vl)
 //!   tmp2  = Sub(tmp1, δ1_vl)
 //!
-//! Symmetric to JunkArithmetic but uses Sub. Adds dead-store pattern variety.
+//! **Mode 1** (live-operand, ~50% when candidates available):
+//!   d2_vl = LoadConst(δ2)
+//!   tmp1  = Sub(lv, d2_vl)       -- lv is a provably-Number VLocal from earlier in block
+//!   tmp2  = Sub(tmp1, d2_vl)
+//!
+//! Symmetric to JunkArithmetic but uses Sub. Adds dead-store pattern variety
+//! and defeats constant-folding attacks on the chain.
+//!
+//! **RNG schedule** (mode-invariant — 6 draws regardless of mode):
+//!   roll(u8) → pos(u32) → mode(u8) → δ1(u32) → δ2(u32) → live_idx(u32)
 
 use crate::Pass;
+use crate::analysis;
 use luau_hir::BinOp;
 use luau_mir::{ConstId, Constant, Instr, MirProgram, VLocal, Value};
 use rand::Rng;
@@ -30,47 +41,105 @@ impl Pass for JunkSubChain {
             let mut n_locals = f.n_locals;
             let mut consts = std::mem::take(&mut f.consts);
             for block in f.blocks.iter_mut() {
+                // Draw 1: inject roll.
                 let roll = rng.gen::<u8>() % 100;
                 if roll >= INJECT_PERCENT {
+                    // Drain remaining 5 draws to keep schedule invariant.
+                    let _pos_pick = rng.gen::<u32>();
+                    let _mode = rng.gen::<u8>();
+                    let _d1 = rng.gen_range(DELTA_MIN..=DELTA_MAX);
+                    let _d2 = rng.gen_range(DELTA_MIN..=DELTA_MAX);
+                    let _live_pick = rng.gen::<u32>();
                     continue;
                 }
+
+                // Draw 2: position.
                 let pos_pick = rng.gen::<u32>();
                 let pos = (pos_pick as usize) % (block.instrs.len() + 1);
 
+                // Draw 3: mode.
+                let mode_pick: u8 = rng.gen::<u8>() % 2;
+
+                // Draw 4 & 5: delta values (always drawn).
                 let delta1 = rng.gen_range(DELTA_MIN..=DELTA_MAX) as f64;
                 let delta2 = rng.gen_range(DELTA_MIN..=DELTA_MAX) as f64;
 
-                let c1_id = ConstId(consts.len() as u32);
-                consts.push(Constant::Number(delta1));
-                let c2_id = ConstId(consts.len() as u32);
-                consts.push(Constant::Number(delta2));
+                // Draw 6: live operand index (always drawn).
+                let live_pick: u32 = rng.gen::<u32>();
 
-                let d1_vl = VLocal(n_locals);
-                let d2_vl = VLocal(n_locals + 1);
-                let tmp1 = VLocal(n_locals + 2);
-                let tmp2 = VLocal(n_locals + 3);
-                n_locals += 4;
+                // Compute candidate set before pos.
+                let candidates = analysis::number_vlocals_before(block, pos, &consts);
+                let use_live = mode_pick == 1 && !candidates.is_empty();
 
-                let junk: [Instr; 4] = [
-                    Instr::LoadConst { dst: d1_vl, src: c1_id },
-                    Instr::LoadConst { dst: d2_vl, src: c2_id },
-                    Instr::BinOp {
-                        dst: tmp1,
-                        op: BinOp::Sub,
-                        lhs: Value::VLocal(d1_vl),
-                        rhs: Value::VLocal(d2_vl),
-                    },
-                    Instr::BinOp {
-                        dst: tmp2,
-                        op: BinOp::Sub,
-                        lhs: Value::VLocal(tmp1),
-                        rhs: Value::VLocal(d1_vl),
-                    },
-                ];
-                for instr in junk.iter().rev().cloned() {
-                    block.instrs.insert(pos, instr);
+                if use_live {
+                    // Mode 1: 3-instruction shape with a live VLocal as lhs.
+                    let mut cand_vec: Vec<u32> = candidates.into_iter().collect();
+                    cand_vec.sort();
+                    let lv = VLocal(cand_vec[(live_pick as usize) % cand_vec.len()]);
+
+                    let c2_id = ConstId(consts.len() as u32);
+                    consts.push(Constant::Number(delta2));
+
+                    let d2_vl = VLocal(n_locals);
+                    let tmp1 = VLocal(n_locals + 1);
+                    let tmp2 = VLocal(n_locals + 2);
+                    n_locals += 3;
+
+                    let junk: [Instr; 3] = [
+                        Instr::LoadConst { dst: d2_vl, src: c2_id },
+                        Instr::BinOp {
+                            dst: tmp1,
+                            op: BinOp::Sub,
+                            lhs: Value::VLocal(lv),
+                            rhs: Value::VLocal(d2_vl),
+                        },
+                        Instr::BinOp {
+                            dst: tmp2,
+                            op: BinOp::Sub,
+                            lhs: Value::VLocal(tmp1),
+                            rhs: Value::VLocal(d2_vl),
+                        },
+                    ];
+                    for instr in junk.iter().rev().cloned() {
+                        block.instrs.insert(pos, instr);
+                    }
+                    let _ = tmp2;
+                    let _ = delta1; // intentionally drawn but unused in mode 1
+                } else {
+                    // Mode 0: original 4-instruction shape.
+                    let c1_id = ConstId(consts.len() as u32);
+                    consts.push(Constant::Number(delta1));
+                    let c2_id = ConstId(consts.len() as u32);
+                    consts.push(Constant::Number(delta2));
+
+                    let d1_vl = VLocal(n_locals);
+                    let d2_vl = VLocal(n_locals + 1);
+                    let tmp1 = VLocal(n_locals + 2);
+                    let tmp2 = VLocal(n_locals + 3);
+                    n_locals += 4;
+
+                    let junk: [Instr; 4] = [
+                        Instr::LoadConst { dst: d1_vl, src: c1_id },
+                        Instr::LoadConst { dst: d2_vl, src: c2_id },
+                        Instr::BinOp {
+                            dst: tmp1,
+                            op: BinOp::Sub,
+                            lhs: Value::VLocal(d1_vl),
+                            rhs: Value::VLocal(d2_vl),
+                        },
+                        Instr::BinOp {
+                            dst: tmp2,
+                            op: BinOp::Sub,
+                            lhs: Value::VLocal(tmp1),
+                            rhs: Value::VLocal(d1_vl),
+                        },
+                    ];
+                    for instr in junk.iter().rev().cloned() {
+                        block.instrs.insert(pos, instr);
+                    }
+                    let _ = tmp2;
+                    let _ = live_pick; // intentionally drawn but unused in mode 0
                 }
-                let _ = tmp2;
             }
             f.n_locals = n_locals;
             f.consts = consts;
@@ -118,7 +187,6 @@ mod tests {
             print(s)
         ";
         let p = mir_of(src);
-        let instrs_before = total_instrs(&p);
         let subs_before = count_subs(&p);
 
         let mut saw_injection = false;
@@ -127,16 +195,24 @@ mod tests {
             let mut rng = ChaCha20Rng::from_seed([s; 32]);
             JunkSubChain.run(&mut p_clone, &mut rng);
             let instrs_after = total_instrs(&p_clone);
+            let instrs_baseline = total_instrs(&mir_of(src));
             let subs_after = count_subs(&p_clone);
-            // Each injection: +4 instrs, +2 Subs.
-            let instr_growth = instrs_after as i64 - instrs_before as i64;
+            // Each injection emits exactly 2 Subs (both modes).
+            // Instruction growth is 3 (mode 1) or 4 (mode 0) per injection.
+            let instr_growth = instrs_after as i64 - instrs_baseline as i64;
             let sub_growth = subs_after as i64 - subs_before as i64;
+            // Each injection adds 2 Subs, so sub_growth = 2 * injections.
             assert_eq!(
-                instr_growth, 2 * sub_growth,
-                "seed {}: instr growth ({}) != 2 * sub growth ({})",
-                s, instr_growth, sub_growth
+                sub_growth % 2, 0,
+                "seed {}: sub growth ({}) should be even", s, sub_growth
             );
-            if sub_growth > 0 {
+            let injections = (sub_growth / 2) as i64;
+            if injections > 0 {
+                assert!(
+                    instr_growth >= 3 * injections && instr_growth <= 4 * injections,
+                    "seed {}: instr growth {} not in [3n={}, 4n={}]",
+                    s, instr_growth, 3 * injections, 4 * injections
+                );
                 saw_injection = true;
             }
         }
@@ -185,6 +261,77 @@ mod tests {
             let after_terms: Vec<_> = p.functions.iter().flat_map(|f| &f.blocks).map(|b| format!("{:?}", b.terminator)).collect();
             assert_eq!(baseline_block_count, after_block_count, "seed {}: block count changed", seed_byte);
             assert_eq!(baseline_terms, after_terms, "seed {}: terminator changed", seed_byte);
+        }
+    }
+
+    #[test]
+    fn mixes_live_and_const_operands() {
+        // A program with several arithmetic operations, giving the pass many
+        // provably-Number VLocals to pick from.
+        let src = "
+            local s = 0
+            for i = 1, 5 do
+                s = s + i * 2
+            end
+            print(s)
+        ";
+        let baseline = mir_of(src);
+        let pre_pass_n_locals = baseline.functions[0].n_locals;
+
+        let mut found_live_operand = false;
+        'outer: for seed_byte in 0..200u8 {
+            let mut p = mir_of(src);
+            let mut rng = ChaCha20Rng::from_seed([seed_byte; 32]);
+            JunkSubChain.run(&mut p, &mut rng);
+            for f in &p.functions {
+                for b in &f.blocks {
+                    for instr in &b.instrs {
+                        if let Instr::BinOp { op: BinOp::Sub, lhs: Value::VLocal(vl), .. } = instr {
+                            // Mode-1 Sub has a live VLocal as lhs; if that
+                            // index is below pre_pass_n_locals, it's not pass-allocated.
+                            if vl.0 < pre_pass_n_locals {
+                                found_live_operand = true;
+                                break 'outer;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            found_live_operand,
+            "no seed in 0..200 produced a BinOp::Sub whose lhs is a pre-pass VLocal"
+        );
+    }
+
+    #[test]
+    fn rng_schedule_mode_invariant() {
+        // Two runs with the same seed must produce identical instruction layouts.
+        let src = "
+            local s = 0
+            for i = 1, 5 do
+                s = s + i * 2
+            end
+            print(s)
+        ";
+        for seed_byte in [0u8, 7, 42, 99, 137, 255] {
+            let mut p1 = mir_of(src);
+            let mut p2 = mir_of(src);
+            let mut r1 = ChaCha20Rng::from_seed([seed_byte; 32]);
+            let mut r2 = ChaCha20Rng::from_seed([seed_byte; 32]);
+            JunkSubChain.run(&mut p1, &mut r1);
+            JunkSubChain.run(&mut p2, &mut r2);
+            let dump = |p: &MirProgram| -> String {
+                let mut s = String::new();
+                for f in &p.functions {
+                    for b in &f.blocks {
+                        for i in &b.instrs { s.push_str(&format!("{:?}\n", i)); }
+                        s.push_str(&format!("term: {:?}\n", b.terminator));
+                    }
+                }
+                s
+            };
+            assert_eq!(dump(&p1), dump(&p2), "seed {} produced different layouts", seed_byte);
         }
     }
 }
