@@ -95,4 +95,28 @@ mod tests {
         assert_ne!(b.output, c.output);
         assert_ne!(a.output, c.output);
     }
+
+    #[test]
+    fn output_does_not_contain_plaintext_global_name() {
+        // Cardinal test: "print" must NOT appear in the obfuscated output.
+        // Compile a program that uses print; the output should contain _enc(...)
+        // and NOT the literal string "print" inside a Luau string literal.
+        let r = obfuscate("print(\"hello\")", Options { seed: Some([55u8; 32]) }).unwrap();
+        // We allow the substring "print" to appear in things like comments or
+        // template scaffolding; what we forbid is a Luau string literal
+        // containing the word print. Check that no `"print"` substring exists.
+        assert!(!r.output.contains("\"print\""), "found plaintext \"print\" in output");
+        assert!(!r.output.contains("'print'"), "found plaintext 'print' in output");
+        // Sanity: confirm the encrypted-string marker IS present.
+        assert!(r.output.contains("_enc("), "expected _enc(...) marker in output");
+    }
+
+    #[test]
+    fn different_seeds_change_encrypted_byte_shape() {
+        // Same source, two different seeds → the encrypted byte sequences
+        // for "print" are different (because the keys are different).
+        let a = obfuscate("print(1)", Options { seed: Some([10u8; 32]) }).unwrap();
+        let b = obfuscate("print(1)", Options { seed: Some([20u8; 32]) }).unwrap();
+        assert_ne!(a.output, b.output);
+    }
 }
