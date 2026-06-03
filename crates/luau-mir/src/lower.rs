@@ -771,4 +771,49 @@ mod tests {
         });
         assert!(break_goto_exists, "expected a Goto to the loop exit");
     }
+
+    #[test]
+    fn multi_return_emits_build_results_and_return_multi() {
+        let p = mir_of("function f() return 1, 2 end");
+        let f = &p.functions[1];
+        let has_build = f.blocks.iter().flat_map(|b| b.instrs.iter())
+            .any(|i| matches!(i, Instr::BuildResults { .. }));
+        let has_return_multi = f.blocks.iter()
+            .any(|b| matches!(b.terminator, Terminator::ReturnMulti(_)));
+        assert!(has_build);
+        assert!(has_return_multi);
+    }
+
+    #[test]
+    fn multi_decl_with_call_uses_build_results() {
+        let p = mir_of("local a, b = f()");
+        let main = p.main();
+        let has_callvar = main.blocks.iter().flat_map(|b| b.instrs.iter())
+            .any(|i| matches!(i, Instr::CallVar { .. }));
+        let has_build = main.blocks.iter().flat_map(|b| b.instrs.iter())
+            .any(|i| matches!(i, Instr::BuildResults { .. }));
+        assert!(has_callvar);
+        assert!(has_build);
+    }
+
+    #[test]
+    fn vararg_in_function_uses_get_varargs() {
+        let p = mir_of("local f = function(...) return ... end");
+        let inner = &p.functions[1];
+        assert!(inner.is_vararg);
+        let has_va = inner.blocks.iter().flat_map(|b| b.instrs.iter())
+            .any(|i| matches!(i, Instr::GetVarargs { .. }));
+        assert!(has_va);
+    }
+
+    #[test]
+    fn generic_for_uses_callvar_multi() {
+        let p = mir_of("for k, v in pairs(t) do x = k end");
+        let main = p.main();
+        let callvar_multi_count = main.blocks.iter().flat_map(|b| b.instrs.iter())
+            .filter(|i| matches!(i, Instr::CallVar { mode: CallMode::Multi, .. }))
+            .count();
+        // One for pairs(t), one for each loop step.
+        assert!(callvar_multi_count >= 2, "got {}", callvar_multi_count);
+    }
 }

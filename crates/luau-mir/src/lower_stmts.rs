@@ -2,9 +2,9 @@
 // Just a comment. Ignore meee!!!
 
 use crate::{
-    lower::FnBuilder, Constant, Instr, MirError, Terminator, Value,
+    lower::FnBuilder, CallMode, Constant, Instr, MirError, Terminator, Value, VLocal,
 };
-use luau_hir::{HirExpr, HirStmt, UpvalueSource};
+use luau_hir::{AssignTarget, HirExpr, HirStmt, UpvalueSource};
 
 pub(crate) fn lower(b: &mut FnBuilder, stmts: &[HirStmt]) -> Result<(), MirError> {
     for stmt in stmts {
@@ -41,15 +41,54 @@ fn lower_stmt(b: &mut FnBuilder, stmt: &HirStmt) -> Result<(), MirError> {
             match e {
                 HirExpr::Call { callee, args } => {
                     let callee_v = b.lower_expr(callee)?;
-                    let mut arg_vs = Vec::with_capacity(args.len());
-                    for a in args {
-                        arg_vs.push(Value::VLocal(b.lower_expr(a)?));
+                    let (arg_vs, spread) = b.lower_expr_list(args)?;
+                    if spread.is_some() {
+                        b.emit(Instr::CallVar {
+                            dst: None,
+                            callee: Value::VLocal(callee_v),
+                            args: arg_vs,
+                            spread_tail: spread,
+                            mode: CallMode::None,
+                        });
+                    } else {
+                        b.emit(Instr::Call {
+                            dst: None,
+                            callee: Value::VLocal(callee_v),
+                            args: arg_vs,
+                        });
                     }
-                    b.emit(Instr::Call {
-                        dst: None,
-                        callee: Value::VLocal(callee_v),
-                        args: arg_vs,
+                    Ok(())
+                }
+                HirExpr::MethodCall { obj, method, args } => {
+                    let obj_v = b.lower_expr(obj)?;
+                    let key_const = b.intern_const(Constant::String(method.clone()));
+                    let key_v = b.fresh_local();
+                    b.emit(Instr::LoadConst { dst: key_v, src: key_const });
+                    let fn_v = b.fresh_local();
+                    b.emit(Instr::GetIndex {
+                        dst: fn_v,
+                        obj: Value::VLocal(obj_v),
+                        key: Value::VLocal(key_v),
                     });
+                    let mut arg_vs = Vec::with_capacity(args.len() + 1);
+                    arg_vs.push(Value::VLocal(obj_v));
+                    let (rest, spread) = b.lower_expr_list(args)?;
+                    arg_vs.extend(rest);
+                    if spread.is_some() {
+                        b.emit(Instr::CallVar {
+                            dst: None,
+                            callee: Value::VLocal(fn_v),
+                            args: arg_vs,
+                            spread_tail: spread,
+                            mode: CallMode::None,
+                        });
+                    } else {
+                        b.emit(Instr::Call {
+                            dst: None,
+                            callee: Value::VLocal(fn_v),
+                            args: arg_vs,
+                        });
+                    }
                     Ok(())
                 }
                 other => {
@@ -222,11 +261,177 @@ fn lower_stmt(b: &mut FnBuilder, stmt: &HirStmt) -> Result<(), MirError> {
             b.emit(Instr::SetUpval { idx: *upvalue, value: Value::VLocal(v) });
             Ok(())
         }
-        HirStmt::ReturnMulti(_) => unimplemented!("Plan 4 Task 7"),
-        HirStmt::LocalDeclMulti { .. } => unimplemented!("Plan 4 Task 7"),
-        HirStmt::AssignMulti { .. } => unimplemented!("Plan 4 Task 7"),
-        HirStmt::GenericFor { .. } => unimplemented!("Plan 4 Task 7"),
+        HirStmt::ReturnMulti(exprs) => {
+            let (values, spread_tail) = b.lower_expr_list(exprs)?;
+            let dst = b.fresh_local();
+            b.emit(Instr::BuildResults { dst, values, spread_tail });
+            b.set_terminator(Terminator::ReturnMulti(Value::VLocal(dst)));
+            let dead = b.new_block();
+            b.switch_to(dead);
+            Ok(())
+        }
+        HirStmt::LocalDeclMulti { symbols, exprs } => {
+            let tbl = build_results_for_binding(b, exprs)?;
+            for (i, sym) in symbols.iter().enumerate() {
+                let slot = b.local_for(*sym);
+                let idx_const = b.intern_const(Constant::Number((i + 1) as f64));
+                let key_v = b.fresh_local();
+                b.emit(Instr::LoadConst { dst: key_v, src: idx_const });
+                let val_v = b.fresh_local();
+                b.emit(Instr::GetIndex {
+                    dst: val_v,
+                    obj: Value::VLocal(tbl),
+                    key: Value::VLocal(key_v),
+                });
+                b.emit(Instr::Move { dst: slot, src: val_v });
+            }
+            Ok(())
+        }
+        HirStmt::AssignMulti { targets, exprs } => {
+            // Evaluate LHS index targets BEFORE the RHS — preserves left-to-right
+            // evaluation semantics for non-aliasing cases.
+            enum PreLhs {
+                Symbol(luau_hir::SymbolId),
+                Upvalue(u32),
+                Index { obj: VLocal, key: VLocal },
+            }
+            let mut pre: Vec<PreLhs> = Vec::with_capacity(targets.len());
+            for t in targets {
+                match t {
+                    AssignTarget::Symbol(s) => pre.push(PreLhs::Symbol(*s)),
+                    AssignTarget::Upvalue(idx) => pre.push(PreLhs::Upvalue(*idx)),
+                    AssignTarget::Index { obj, key } => {
+                        let o = b.lower_expr(obj)?;
+                        let k = b.lower_expr(key)?;
+                        pre.push(PreLhs::Index { obj: o, key: k });
+                    }
+                }
+            }
+            let tbl = build_results_for_binding(b, exprs)?;
+            for (i, lhs) in pre.into_iter().enumerate() {
+                let idx_const = b.intern_const(Constant::Number((i + 1) as f64));
+                let key_v = b.fresh_local();
+                b.emit(Instr::LoadConst { dst: key_v, src: idx_const });
+                let val_v = b.fresh_local();
+                b.emit(Instr::GetIndex {
+                    dst: val_v,
+                    obj: Value::VLocal(tbl),
+                    key: Value::VLocal(key_v),
+                });
+                match lhs {
+                    PreLhs::Symbol(sym) => {
+                        if b.is_global(sym) {
+                            let name_str = b.name_of(sym);
+                            let name = b.intern_const(Constant::String(name_str));
+                            b.emit(Instr::SetGlobal { name, value: Value::VLocal(val_v) });
+                        } else {
+                            let slot = b.local_for(sym);
+                            b.emit(Instr::Move { dst: slot, src: val_v });
+                        }
+                    }
+                    PreLhs::Upvalue(idx) => {
+                        b.emit(Instr::SetUpval { idx, value: Value::VLocal(val_v) });
+                    }
+                    PreLhs::Index { obj, key } => {
+                        b.emit(Instr::SetIndex {
+                            obj: Value::VLocal(obj),
+                            key: Value::VLocal(key),
+                            value: Value::VLocal(val_v),
+                        });
+                    }
+                }
+            }
+            Ok(())
+        }
+        HirStmt::GenericFor { vars, exprs, body } => {
+            // Compute iter/state/ctrl from exprs, applying the "last expr can spread" rule.
+            let triple = build_results_for_binding(b, exprs)?;
+            let iter = read_idx(b, triple, 1)?;
+            let state = read_idx(b, triple, 2)?;
+            let ctrl_init = read_idx(b, triple, 3)?;
+            let ctrl_slot = b.fresh_local();
+            b.emit(Instr::Move { dst: ctrl_slot, src: ctrl_init });
+
+            let header = b.new_block();
+            let body_block = b.new_block();
+            let exit = b.new_block();
+            b.set_terminator(Terminator::Goto(header));
+            b.switch_to(header);
+            // step = iter(state, ctrl) — multi-result.
+            let step_tbl = b.fresh_local();
+            b.emit(Instr::CallVar {
+                dst: Some(step_tbl),
+                callee: Value::VLocal(iter),
+                args: vec![Value::VLocal(state), Value::VLocal(ctrl_slot)],
+                spread_tail: None,
+                mode: CallMode::Multi,
+            });
+            // ctrl = step[1]; if ctrl == nil break.
+            let new_ctrl = read_idx(b, step_tbl, 1)?;
+            let nil_const = b.intern_const(Constant::Nil);
+            let nil_v = b.fresh_local();
+            b.emit(Instr::LoadConst { dst: nil_v, src: nil_const });
+            let is_nil = b.fresh_local();
+            b.emit(Instr::BinOp {
+                dst: is_nil,
+                op: luau_hir::BinOp::Eq,
+                lhs: Value::VLocal(new_ctrl),
+                rhs: Value::VLocal(nil_v),
+            });
+            let not_nil = b.fresh_local();
+            b.emit(Instr::UnOp {
+                dst: not_nil,
+                op: luau_hir::UnOp::Not,
+                operand: Value::VLocal(is_nil),
+            });
+            b.set_terminator(Terminator::Branch {
+                cond: Value::VLocal(not_nil),
+                then_block: body_block,
+                else_block: exit,
+            });
+            b.switch_to(body_block);
+            b.emit(Instr::Move { dst: ctrl_slot, src: new_ctrl });
+            // Bind each loop var = step[i+1] (1-based; step[1] is the new ctrl, which
+            // is also the first loop var per the Lua generic-for protocol).
+            for (i, var) in vars.iter().enumerate() {
+                let val = read_idx(b, step_tbl, (i + 1) as i64)?;
+                let slot = b.local_for(*var);
+                b.emit(Instr::Move { dst: slot, src: val });
+            }
+            b.loop_exits.push(exit);
+            crate::lower_stmts::lower(b, body)?;
+            b.loop_exits.pop();
+            b.set_terminator(Terminator::Goto(header));
+            b.switch_to(exit);
+            Ok(())
+        }
     }
+}
+
+/// For multi-bind RHS: build a results table from the leading non-spread values
+/// plus the trailing spread. Mirrors the "adjust" rule.
+fn build_results_for_binding(
+    b: &mut FnBuilder,
+    exprs: &[HirExpr],
+) -> Result<VLocal, MirError> {
+    let (values, spread_tail) = b.lower_expr_list(exprs)?;
+    let dst = b.fresh_local();
+    b.emit(Instr::BuildResults { dst, values, spread_tail });
+    Ok(dst)
+}
+
+/// Read `tbl[idx]` (with `idx` a positive integer literal) into a fresh VLocal.
+fn read_idx(b: &mut FnBuilder, tbl: VLocal, idx: i64) -> Result<VLocal, MirError> {
+    let key_const = b.intern_const(Constant::Number(idx as f64));
+    let key_v = b.fresh_local();
+    b.emit(Instr::LoadConst { dst: key_v, src: key_const });
+    let dst = b.fresh_local();
+    b.emit(Instr::GetIndex {
+        dst,
+        obj: Value::VLocal(tbl),
+        key: Value::VLocal(key_v),
+    });
+    Ok(dst)
 }
 
 /// Best-effort constant evaluation of a numeric-for step expression. Returns
