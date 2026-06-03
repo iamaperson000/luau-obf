@@ -236,7 +236,7 @@ pub(crate) fn format_byte_array_literal(bytes: &[u8]) -> String {
     parts.join(", ")
 }
 
-fn encode_luau_string_literal(bytes: &[u8]) -> String {
+pub(crate) fn encode_luau_string_literal(bytes: &[u8]) -> String {
     // Use zero-padded 3-digit decimal escapes (\NNN) for every byte that is not
     // safe printable ASCII.  Three digits is Luau's maximum for numeric string
     // escapes, so the next character can *never* be consumed as part of this
