@@ -9,6 +9,7 @@ use rand_chacha::ChaCha20Rng;
 
 pub mod identity;
 pub mod expr_mangle;
+pub mod add_padding;
 // but how?
 /// A MIR→MIR transform.
 pub trait Pass {
@@ -65,4 +66,5 @@ pub fn default_plan() -> PassPlan {
     PassPlan::new()
         .push(Box::new(identity::Identity))
         .push(Box::new(expr_mangle::ExpressionMangle))
+        .push(Box::new(add_padding::AddIdentityPadding))
 }
