@@ -102,12 +102,22 @@ pub fn render(
     let k1 = u32::from_le_bytes([k_buf[4], k_buf[5], k_buf[6], k_buf[7]]) | 1;
     // k1 forced odd so the keystream's `pc * k1` term varies with pc on a byte basis.
 
+    // Plan 13: generate a per-proto opcode permutation drawn from the shared
+    // rng. The permutation must come before encode_function consumes the rng
+    // (currently it doesn't, but we keep the ordering explicit) so that
+    // determinism holds across builds with the same seed.
+    let n_ops = crate::opmap::ALL_OPS.len();
+    let perms_and_invs: Vec<(Vec<u8>, Vec<u8>)> = (0..program.functions.len())
+        .map(|_| crate::encode::make_opcode_permutation(n_ops, rng))
+        .collect();
+
     let codes: Vec<String> = program
         .functions
         .iter()
         .enumerate()
         .map(|(i, f)| {
-            let bytes = encode_function(f, opmap, i as u32, k0, k1);
+            let (perm, inv) = &perms_and_invs[i];
+            let bytes = encode_function(f, opmap, i as u32, k0, k1, perm, inv);
             format!("\"{}\"", encode_luau_string_literal(&bytes))
         })
         .collect();

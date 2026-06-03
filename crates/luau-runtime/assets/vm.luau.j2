@@ -100,6 +100,10 @@ vm_call = function(proto_id, args, nargs, upvals)
     local num_params = _byte(code, 1, proto_id)
     local num_regs = _byte(code, 2, proto_id) + _byte(code, 3, proto_id) * 256
     local is_vararg = _byte(code, 5, proto_id) == 1
+    local inv = {}
+    for i = 1, 35 do
+        inv[i] = _byte(code, 5 + i, proto_id)
+    end
     upvals = upvals or {}
     local regs = _tcreate(num_regs + 1)
     for i = 1, num_params do
@@ -115,10 +119,11 @@ vm_call = function(proto_id, args, nargs, upvals)
         end
         frame_varargs.n = vn
     end
-    local pc = 6
+    local pc = 41
     local code_len = #code
     while pc <= code_len do
-        local op = _byte(code, pc, proto_id)
+        local raw = _byte(code, pc, proto_id)
+        local op = inv[raw]
         pc = pc + 1
         if op == {{ ops.LoadNil }} then
             local a = read_u16(code, pc, proto_id); pc = pc + 2

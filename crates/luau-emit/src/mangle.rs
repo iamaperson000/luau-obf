@@ -140,7 +140,7 @@ pub const MANGLE_TARGETS: &[&str] = &[
     "code", "consts", "meta", "num_params", "num_regs", "is_vararg",
     "regs", "frame_varargs", "vn", "pc", "code_len",
     // Per-handler locals.
-    "op", "a", "b", "c", "delta", "pid", "n_upvals", "new_upvals",
+    "op", "inv", "a", "b", "c", "delta", "pid", "n_upvals", "new_upvals",
     "kind", "payload", "captured", "pa", "n", "fn", "call_args",
     "total_n", "sp", "m", "sp_tbl", "mode", "r", "results", "tbl",
     "n_values", "count",
