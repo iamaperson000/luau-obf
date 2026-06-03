@@ -78,73 +78,88 @@ pub fn render(
     opmap: &OpMap,
     rng: &mut ChaCha20Rng,
 ) -> Result<String, EmitError> {
-    let opcodes: Vec<(String, u8)> = ALL_OPS
-        .iter()
-        .map(|k| (opname(*k).to_string(), opmap.opcode_of(*k)))
-        .collect();
+    // Plan 14: derive stage-0 key BEFORE any other rng consumption that
+    // affects stage-1. Same seed -> same stage-0 key.
+    let stage0_key = crate::stage0::derive_stage0_key(rng);
 
-    let ops: std::collections::HashMap<String, u8> = ALL_OPS
-        .iter()
-        .map(|k| (opname(*k).to_string(), opmap.opcode_of(*k)))
-        .collect();
+    let stage1_source = {
+        let opcodes: Vec<(String, u8)> = ALL_OPS
+            .iter()
+            .map(|k| (opname(*k).to_string(), opmap.opcode_of(*k)))
+            .collect();
 
-    let (key_a, key_b) = derive_string_keys(rng);
+        let ops: std::collections::HashMap<String, u8> = ALL_OPS
+            .iter()
+            .map(|k| (opname(*k).to_string(), opmap.opcode_of(*k)))
+            .collect();
 
-    let mut consts: Vec<String> = Vec::with_capacity(program.functions.len());
-    for (i, f) in program.functions.iter().enumerate() {
-        consts.push(format_const_pool(&f.consts, &key_a, &key_b, i as u64, rng)?);
-    }
+        let (key_a, key_b) = derive_string_keys(rng);
 
-    use rand::RngCore;
-    let mut k_buf = [0u8; 8];
-    rng.fill_bytes(&mut k_buf);
-    let k0 = u32::from_le_bytes([k_buf[0], k_buf[1], k_buf[2], k_buf[3]]);
-    let k1 = u32::from_le_bytes([k_buf[4], k_buf[5], k_buf[6], k_buf[7]]) | 1;
-    // k1 forced odd so the keystream's `pc * k1` term varies with pc on a byte basis.
+        let mut consts: Vec<String> = Vec::with_capacity(program.functions.len());
+        for (i, f) in program.functions.iter().enumerate() {
+            consts.push(format_const_pool(&f.consts, &key_a, &key_b, i as u64, rng)?);
+        }
 
-    // Plan 13: generate a per-proto opcode permutation drawn from the shared
-    // rng. The permutation must come before encode_function consumes the rng
-    // (currently it doesn't, but we keep the ordering explicit) so that
-    // determinism holds across builds with the same seed.
-    let n_ops = crate::opmap::ALL_OPS.len();
-    let perms_and_invs: Vec<(Vec<u8>, Vec<u8>)> = (0..program.functions.len())
-        .map(|_| crate::encode::make_opcode_permutation(n_ops, rng))
-        .collect();
+        use rand::RngCore;
+        let mut k_buf = [0u8; 8];
+        rng.fill_bytes(&mut k_buf);
+        let k0 = u32::from_le_bytes([k_buf[0], k_buf[1], k_buf[2], k_buf[3]]);
+        let k1 = u32::from_le_bytes([k_buf[4], k_buf[5], k_buf[6], k_buf[7]]) | 1;
+        // k1 forced odd so the keystream's `pc * k1` term varies with pc on a byte basis.
 
-    let codes: Vec<String> = program
-        .functions
-        .iter()
-        .enumerate()
-        .map(|(i, f)| {
-            let (perm, inv) = &perms_and_invs[i];
-            let bytes = encode_function(f, opmap, i as u32, k0, k1, perm, inv);
-            format!("\"{}\"", encode_luau_string_literal(&bytes))
+        // Plan 13: generate a per-proto opcode permutation drawn from the shared
+        // rng. The permutation must come before encode_function consumes the rng
+        // (currently it doesn't, but we keep the ordering explicit) so that
+        // determinism holds across builds with the same seed.
+        let n_ops = crate::opmap::ALL_OPS.len();
+        let perms_and_invs: Vec<(Vec<u8>, Vec<u8>)> = (0..program.functions.len())
+            .map(|_| crate::encode::make_opcode_permutation(n_ops, rng))
+            .collect();
+
+        let codes: Vec<String> = program
+            .functions
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                let (perm, inv) = &perms_and_invs[i];
+                let bytes = encode_function(f, opmap, i as u32, k0, k1, perm, inv);
+                format!("\"{}\"", encode_luau_string_literal(&bytes))
+            })
+            .collect();
+
+        let key_a_lit = format_byte_array_literal(&key_a);
+        let key_b_lit = format_byte_array_literal(&key_b);
+
+        let mut env = Environment::new();
+        env.add_template("vm", luau_runtime::VM_TEMPLATE)
+            .map_err(|e| EmitError::Template(e.to_string()))?;
+        let tmpl = env.get_template("vm").unwrap();
+        let raw_output = tmpl.render(minijinja::context! {
+            opcodes => opcodes,
+            ops => ops,
+            consts => consts,
+            codes => codes,
+            key_a => key_a_lit,
+            key_b => key_b_lit,
+            k0 => k0,
+            k1 => k1,
         })
-        .collect();
-
-    let key_a_lit = format_byte_array_literal(&key_a);
-    let key_b_lit = format_byte_array_literal(&key_b);
-
-    let mut env = Environment::new();
-    env.add_template("vm", luau_runtime::VM_TEMPLATE)
         .map_err(|e| EmitError::Template(e.to_string()))?;
-    let tmpl = env.get_template("vm").unwrap();
-    let output = tmpl.render(minijinja::context! {
-        opcodes => opcodes,
-        ops => ops,
-        consts => consts,
-        codes => codes,
-        key_a => key_a_lit,
-        key_b => key_b_lit,
-        k0 => k0,
-        k1 => k1,
-    })
-    .map_err(|e| EmitError::Template(e.to_string()))?;
 
-    let stripped = crate::mangle::strip_comments(&output);
-    let name_map = crate::mangle::build_name_map(rng);
-    let mangled = crate::mangle::mangle_identifiers(&stripped, &name_map);
-    Ok(mangled)
+        let stripped = crate::mangle::strip_comments(&raw_output);
+        let name_map = crate::mangle::build_name_map(rng);
+        crate::mangle::mangle_identifiers(&stripped, &name_map)
+    };
+
+    // Plan 14: encrypt the stage-1 source and wrap it in a stage-0 bootstrap.
+    let encrypted = crate::stage0::encrypt_payload(stage1_source.as_bytes(), &stage0_key);
+    let stage0_text = crate::stage0::render_stage0(&encrypted, &stage0_key);
+
+    let stage0_stripped = crate::mangle::strip_comments(&stage0_text);
+    let stage0_map = crate::mangle::build_stage0_name_map(rng);
+    let stage0_mangled = crate::mangle::mangle_identifiers(&stage0_stripped, &stage0_map);
+
+    Ok(stage0_mangled)
 }
 
 fn opname(k: OpKind) -> &'static str {

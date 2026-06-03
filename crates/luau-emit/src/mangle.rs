@@ -153,6 +153,33 @@ pub const MANGLE_TARGETS: &[&str] = &[
     "t", "pos", "new", "value",
 ];
 
+/// Stage-0 wrapper's identifier set. These names appear in the
+/// `render_stage0` template and must be renamed independently from the
+/// stage-1 mangling map.
+pub const STAGE0_MANGLE_TARGETS: &[&str] = &[
+    "_s", "_k", "_d", "out", "kb", "i", "b", "idx", "pos",
+];
+
+/// Build a deterministic stage-0 mangling map: same alphabet of two-letter
+/// suffixes as the stage-1 map, but consuming the rng separately so the
+/// stage-0 and stage-1 maps are independent.
+pub fn build_stage0_name_map(rng: &mut rand_chacha::ChaCha20Rng) -> HashMap<String, String> {
+    use rand::seq::SliceRandom;
+    let alphabet: Vec<char> = ('a'..='z').collect();
+    let mut suffixes: Vec<String> = Vec::with_capacity(26 * 26);
+    for a in &alphabet {
+        for b in &alphabet {
+            suffixes.push(format!("_{}{}", a, b));
+        }
+    }
+    suffixes.shuffle(rng);
+    let mut map: HashMap<String, String> = HashMap::new();
+    for (i, name) in STAGE0_MANGLE_TARGETS.iter().enumerate() {
+        map.insert((*name).to_string(), suffixes[i].clone());
+    }
+    map
+}
+
 /// Build a deterministic mangling map: each source name → an opaque `_xy`-style
 /// name. Uses the rng to pick a permutation of two-letter suffixes.
 pub fn build_name_map(rng: &mut rand_chacha::ChaCha20Rng) -> HashMap<String, String> {

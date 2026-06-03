@@ -56,6 +56,89 @@ fn random_seed() -> [u8; 32] {
 mod tests {
     use super::*;
 
+    /// Decode a Luau string literal body containing `\NNN` decimal escapes,
+    /// `\\`, `\"`, `\n`, `\r`, `\t`, and printable ASCII into a byte vector.
+    fn decode_luau_string_literal_body(body: &str) -> Vec<u8> {
+        let bytes = body.as_bytes();
+        let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if b == b'\\' && i + 1 < bytes.len() {
+                let next = bytes[i + 1];
+                if next.is_ascii_digit() {
+                    // \N, \NN, or \NNN — Luau accepts 1-3 digits.
+                    let mut n = 0u32;
+                    let mut k = i + 1;
+                    let end = (i + 4).min(bytes.len());
+                    while k < end && bytes[k].is_ascii_digit() {
+                        n = n * 10 + (bytes[k] - b'0') as u32;
+                        k += 1;
+                    }
+                    out.push(n as u8);
+                    i = k;
+                } else {
+                    match next {
+                        b'\\' => out.push(b'\\'),
+                        b'"' => out.push(b'"'),
+                        b'\'' => out.push(b'\''),
+                        b'n' => out.push(b'\n'),
+                        b'r' => out.push(b'\r'),
+                        b't' => out.push(b'\t'),
+                        other => out.push(other),
+                    }
+                    i += 2;
+                }
+            } else {
+                out.push(b);
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// Extract the stage-1 source from a stage-0-wrapped output. Parses the
+    /// first two `local <name> = "<...>"` lines as payload and key, then
+    /// reverses the XOR encryption to recover the stage-1 Luau source.
+    fn decrypt_stage1_from_output(output: &str) -> String {
+        // Find first quoted string literal — that's the payload.
+        let (payload_body, after_payload) = extract_first_quoted(output)
+            .expect("first quoted literal (payload) missing from stage-0 output");
+        // Find next quoted literal — that's the key.
+        let (key_body, _) = extract_first_quoted(after_payload)
+            .expect("second quoted literal (key) missing from stage-0 output");
+        let payload = decode_luau_string_literal_body(payload_body);
+        let key = decode_luau_string_literal_body(key_body);
+        assert_eq!(key.len(), 32, "stage-0 key isn't 32 bytes");
+        let plain: Vec<u8> = payload.iter().enumerate().map(|(i, b)| {
+            let k = key[i % 32];
+            let pos = (i & 0xFF) as u8;
+            b ^ k ^ pos
+        }).collect();
+        String::from_utf8(plain).expect("stage-1 source is UTF-8")
+    }
+
+    /// Find the first `"..."` string literal in the input, returning the
+    /// body (without quotes) and the slice that follows the closing quote.
+    fn extract_first_quoted(s: &str) -> Option<(&str, &str)> {
+        let bytes = s.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() && bytes[i] != b'"' { i += 1; }
+        if i >= bytes.len() { return None; }
+        let start = i + 1;
+        let mut j = start;
+        while j < bytes.len() {
+            if bytes[j] == b'\\' && j + 1 < bytes.len() {
+                j += 2;
+                continue;
+            }
+            if bytes[j] == b'"' { break; }
+            j += 1;
+        }
+        if j >= bytes.len() { return None; }
+        Some((&s[start..j], &s[j+1..]))
+    }
+
     #[test]
     fn obfuscate_empty() {
         let r = obfuscate("", Options::default()).unwrap();
@@ -374,10 +457,13 @@ mod tests {
              print(f(25)) print(true) print(\"hi\")",
             Options { seed: Some([233u8; 32]) }
         ).unwrap();
+        // Plan 14: the stage-1 source is encrypted inside the wrapper.
+        // Decrypt it to inspect the constant-blob structure.
+        let stage1 = decrypt_stage1_from_output(&r.output);
         // Crude extraction: find every `_xx("…")` and decode the `\NNN`
         // escapes to count the actual byte length.
         let mut blob_lengths: Vec<usize> = Vec::new();
-        let bytes = r.output.as_bytes();
+        let bytes = stage1.as_bytes();
         let mut i = 0;
         while i + 6 < bytes.len() {
             if bytes[i] == b'_'
@@ -511,11 +597,14 @@ mod tests {
              print(a(1, 2), b(3, 4))",
             Options { seed: Some([244u8; 32]) }
         ).unwrap();
+        // Plan 14: bytecode entries live inside the encrypted stage-1 payload.
+        // Recover the stage-1 source to scan for CODE entries.
+        let stage1 = decrypt_stage1_from_output(&r.output);
         // Extract the first two CODE entries.
         // A CODE entry has the form: `"\NNN\NNN..."` inside the CODE table.
         // Find all such literals and grab the first two non-empty ones.
         let mut codes: Vec<Vec<u8>> = Vec::new();
-        let bytes = r.output.as_bytes();
+        let bytes = stage1.as_bytes();
         let mut i = 0;
         while i < bytes.len() {
             // Look for an opening `"` that's immediately preceded by a comma or
