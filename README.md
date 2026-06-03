@@ -2,11 +2,13 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 8 — string constants in the constant pool are now stored
-encrypted (XOR with per-build position-mixed key) and decrypted lazily inside
-the VM. Static inspection of the obfuscated output no longer reveals global
-names, method names, or user string literals. Plans 1–7 features unchanged;
-full corpus passes under every seed.
+**Status:** Plan 9 — VM template hardening. Internal identifiers (`vm_call`,
+`OP_LoadConst`, `read_u16`, register/upvalue locals, etc.) are renamed to
+seed-derived opaque names; all comments are stripped from the rendered output;
+string-constant encryption now mixes a per-proto salt so identical plaintexts
+produce different ciphertexts across protos. A reader of the obfuscated chunk
+no longer sees a labeled VM — they see ~400 lines of two-letter locals
+operating on opaque tables and bytes. Full corpus passes under every seed.
 
 ## Build
 
