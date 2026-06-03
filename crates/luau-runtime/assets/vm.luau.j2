@@ -21,8 +21,12 @@ local _tpack = table.pack or function(...)
     return t
 end
 
-local _KA = { {{ key_a }} }
-local _KB = { {{ key_b }} }
+local _KAS = {
+{% for k in keys_a %}    { {{ k }} },
+{% endfor %}}
+local _KBS = {
+{% for k in keys_b %}    { {{ k }} },
+{% endfor %}}
 
 local _k0 = {{ k0 }}
 local _k1 = {{ k1 }}
@@ -33,14 +37,16 @@ local function _byte(code, pc, pid)
     return _xor(b, mixed % 256)
 end
 
-local function _decrypt(enc, salt)
+local function _decrypt(enc, proto_id)
+    local ka = _KAS[proto_id + 1]
+    local kb = _KBS[proto_id + 1]
     local out = {}
-    local salt_term = (salt * 7919) % 4294967296
+    local salt_term = (proto_id * 7919) % 4294967296
     for i = 1, #enc do
         local b = _sbyte(enc, i)
         local idx = ((i - 1) % 32) + 1
         local pos = ((i - 1) + salt_term) % 256
-        out[i] = _schar(_xor(_xor(_xor(b, _KA[idx]), pos), _KB[idx]))
+        out[i] = _schar(_xor(_xor(_xor(b, ka[idx]), pos), kb[idx]))
     end
     return _tconcat(out)
 end

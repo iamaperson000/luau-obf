@@ -93,11 +93,12 @@ pub fn render(
             .map(|k| (opname(*k).to_string(), opmap.opcode_of(*k)))
             .collect();
 
-        let (key_a, key_b) = derive_string_keys(rng);
+        let per_proto_keys = derive_per_proto_string_keys(rng, program.functions.len());
 
         let mut consts: Vec<String> = Vec::with_capacity(program.functions.len());
         for (i, f) in program.functions.iter().enumerate() {
-            consts.push(format_const_pool(&f.consts, &key_a, &key_b, i as u64, rng)?);
+            let (ka, kb) = &per_proto_keys[i];
+            consts.push(format_const_pool(&f.consts, ka, kb, i as u64, rng)?);
         }
 
         use rand::RngCore;
@@ -127,8 +128,8 @@ pub fn render(
             })
             .collect();
 
-        let key_a_lit = format_byte_array_literal(&key_a);
-        let key_b_lit = format_byte_array_literal(&key_b);
+        let keys_a_lits: Vec<String> = per_proto_keys.iter().map(|(a, _)| format_byte_array_literal(a)).collect();
+        let keys_b_lits: Vec<String> = per_proto_keys.iter().map(|(_, b)| format_byte_array_literal(b)).collect();
 
         let mut env = Environment::new();
         env.add_template("vm", luau_runtime::VM_TEMPLATE)
@@ -139,8 +140,8 @@ pub fn render(
             ops => ops,
             consts => consts,
             codes => codes,
-            key_a => key_a_lit,
-            key_b => key_b_lit,
+            keys_a => keys_a_lits,
+            keys_b => keys_b_lits,
             k0 => k0,
             k1 => k1,
         })
@@ -228,6 +229,22 @@ pub(crate) fn derive_string_keys(rng: &mut ChaCha20Rng) -> ([u8; 32], [u8; 32]) 
     rng.fill_bytes(&mut a);
     rng.fill_bytes(&mut b);
     (a, b)
+}
+
+pub(crate) fn derive_per_proto_string_keys(
+    rng: &mut ChaCha20Rng,
+    n_protos: usize,
+) -> Vec<([u8; 32], [u8; 32])> {
+    use rand::RngCore;
+    let mut out = Vec::with_capacity(n_protos);
+    for _ in 0..n_protos {
+        let mut a = [0u8; 32];
+        let mut b = [0u8; 32];
+        rng.fill_bytes(&mut a);
+        rng.fill_bytes(&mut b);
+        out.push((a, b));
+    }
+    out
 }
 
 pub(crate) fn encrypt_bytes(
@@ -390,5 +407,29 @@ mod tests {
         let huge: String = "a".repeat(MAX_STRING_LEN + 1);
         let r = build_constant_blob(&Constant::String(huge), &mut rng);
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn per_proto_keys_distinct() {
+        use rand::SeedableRng;
+        let mut rng = ChaCha20Rng::from_seed([7u8; 32]);
+        let keys = derive_per_proto_string_keys(&mut rng, 4);
+        assert_eq!(keys.len(), 4);
+        for i in 0..keys.len() {
+            for j in (i+1)..keys.len() {
+                assert_ne!(keys[i].0, keys[j].0, "key_a {} == key_a {}", i, j);
+                assert_ne!(keys[i].1, keys[j].1, "key_b {} == key_b {}", i, j);
+            }
+        }
+    }
+
+    #[test]
+    fn per_proto_keys_deterministic() {
+        use rand::SeedableRng;
+        let mut r1 = ChaCha20Rng::from_seed([9u8; 32]);
+        let mut r2 = ChaCha20Rng::from_seed([9u8; 32]);
+        let k1 = derive_per_proto_string_keys(&mut r1, 3);
+        let k2 = derive_per_proto_string_keys(&mut r2, 3);
+        assert_eq!(k1, k2);
     }
 }
