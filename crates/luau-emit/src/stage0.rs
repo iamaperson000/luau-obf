@@ -9,6 +9,36 @@
 
 use rand_chacha::ChaCha20Rng;
 
+/// The Luau _d(s) function that decrypts RC4 payloads.
+/// Used by both render_stage0 and the rc4_rust_luau_agree test.
+const STAGE0_DECRYPT_LUAU: &str = r#"local function _d(s)
+    local S = {}
+    for i = 0, 255 do S[i] = i end
+    local kb = {}
+    for i = 1, 32 do kb[i] = string.byte(_k, i) end
+    local j = 0
+    for i = 0, 255 do
+        j = (j + S[i] + kb[(i % 32) + 1]) % 256
+        S[i], S[j] = S[j], S[i]
+    end
+    local ii = 0
+    local jj = 0
+    for _ = 1, 256 do
+        ii = (ii + 1) % 256
+        jj = (jj + S[ii]) % 256
+        S[ii], S[jj] = S[jj], S[ii]
+    end
+    local out = {}
+    for n = 1, #s do
+        ii = (ii + 1) % 256
+        jj = (jj + S[ii]) % 256
+        S[ii], S[jj] = S[jj], S[ii]
+        local k = S[(S[ii] + S[jj]) % 256]
+        out[n] = string.char(bit32.bxor(string.byte(s, n), k))
+    end
+    return table.concat(out)
+end"#;
+
 /// Encrypt (or decrypt — symmetric) the stage-1 source using RC4 with a
 /// 256-byte keystream drop to defeat the positional-bucketing attack.
 pub fn encrypt_payload(plaintext: &[u8], key: &[u8; 32]) -> Vec<u8> {
@@ -54,37 +84,12 @@ pub fn render_stage0(encrypted_payload: &[u8], key: &[u8; 32]) -> String {
     format!(
         r#"local _s = "{payload}"
 local _k = "{key}"
-local function _d(s)
-    local S = {{}}
-    for i = 0, 255 do S[i] = i end
-    local kb = {{}}
-    for i = 1, 32 do kb[i] = string.byte(_k, i) end
-    local j = 0
-    for i = 0, 255 do
-        j = (j + S[i] + kb[(i % 32) + 1]) % 256
-        S[i], S[j] = S[j], S[i]
-    end
-    local ii = 0
-    local jj = 0
-    for _ = 1, 256 do
-        ii = (ii + 1) % 256
-        jj = (jj + S[ii]) % 256
-        S[ii], S[jj] = S[jj], S[ii]
-    end
-    local out = {{}}
-    for n = 1, #s do
-        ii = (ii + 1) % 256
-        jj = (jj + S[ii]) % 256
-        S[ii], S[jj] = S[jj], S[ii]
-        local k = S[(S[ii] + S[jj]) % 256]
-        out[n] = string.char(bit32.bxor(string.byte(s, n), k))
-    end
-    return table.concat(out)
-end
+{decrypt_fn}
 return loadstring(_d(_s))(...)
 "#,
         payload = payload_lit,
         key = key_lit,
+        decrypt_fn = STAGE0_DECRYPT_LUAU,
     )
 }
 
@@ -134,42 +139,17 @@ mod tests {
         let plaintext = b"return \"abc\"";
         let cipher = encrypt_payload(plaintext, &key);
 
-        // Render a tiny Luau program that runs the Luau _d (lifted verbatim from
-        // render_stage0) on the ciphertext and prints the decrypted bytes.
+        // Render a tiny Luau program that runs the Luau _d (from STAGE0_DECRYPT_LUAU)
+        // on the ciphertext and prints the decrypted bytes.
         let lua = format!(r#"
 local _s = "{cipher_lit}"
 local _k = "{key_lit}"
-local function _d(s)
-    local S = {{}}
-    for i = 0, 255 do S[i] = i end
-    local kb = {{}}
-    for i = 1, 32 do kb[i] = string.byte(_k, i) end
-    local j = 0
-    for i = 0, 255 do
-        j = (j + S[i] + kb[(i % 32) + 1]) % 256
-        S[i], S[j] = S[j], S[i]
-    end
-    local ii = 0
-    local jj = 0
-    for _ = 1, 256 do
-        ii = (ii + 1) % 256
-        jj = (jj + S[ii]) % 256
-        S[ii], S[jj] = S[jj], S[ii]
-    end
-    local out = {{}}
-    for n = 1, #s do
-        ii = (ii + 1) % 256
-        jj = (jj + S[ii]) % 256
-        S[ii], S[jj] = S[jj], S[ii]
-        local k = S[(S[ii] + S[jj]) % 256]
-        out[n] = string.char(bit32.bxor(string.byte(s, n), k))
-    end
-    return table.concat(out)
-end
+{decrypt_fn}
 print(_d(_s))
 "#,
             cipher_lit = crate::render::encode_luau_string_literal(&cipher),
             key_lit = crate::render::encode_luau_string_literal(&key),
+            decrypt_fn = STAGE0_DECRYPT_LUAU,
         );
 
         let dir = tempfile::tempdir().unwrap();

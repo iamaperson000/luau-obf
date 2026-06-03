@@ -97,34 +97,6 @@ mod tests {
         out
     }
 
-    /// RC4 with drop-256. Mirrors encrypt_payload in luau-emit/src/stage0.rs.
-    fn rc4_decrypt(ciphertext: &[u8], key: &[u8]) -> Vec<u8> {
-        let mut s = [0u8; 256];
-        for (i, slot) in s.iter_mut().enumerate() { *slot = i as u8; }
-        let mut j: u8 = 0;
-        for i in 0..256 {
-            j = j.wrapping_add(s[i]).wrapping_add(key[i % key.len()]);
-            s.swap(i, j as usize);
-        }
-        let mut ii: u8 = 0;
-        let mut jj: u8 = 0;
-        for _ in 0..256 {
-            ii = ii.wrapping_add(1);
-            jj = jj.wrapping_add(s[ii as usize]);
-            s.swap(ii as usize, jj as usize);
-        }
-        let mut out = Vec::with_capacity(ciphertext.len());
-        for &c in ciphertext {
-            ii = ii.wrapping_add(1);
-            jj = jj.wrapping_add(s[ii as usize]);
-            s.swap(ii as usize, jj as usize);
-            let k_idx = s[ii as usize].wrapping_add(s[jj as usize]) as usize;
-            let k = s[k_idx];
-            out.push(c ^ k);
-        }
-        out
-    }
-
     /// Extract the stage-1 source from a stage-0-wrapped output. Parses the
     /// first two `local <name> = "<...>"` lines as payload and key, then
     /// reverses the RC4 encryption to recover the stage-1 Luau source.
@@ -138,8 +110,10 @@ mod tests {
         let payload = decode_luau_string_literal_body(payload_body);
         let key = decode_luau_string_literal_body(key_body);
         assert_eq!(key.len(), 32, "stage-0 key isn't 32 bytes");
-        // RC4 with drop-256 (mirrors stage0.rs encrypt_payload).
-        let plain = rc4_decrypt(&payload, &key);
+        // RC4 with drop-256 (symmetric: encrypt and decrypt are the same).
+        let key_arr: &[u8; 32] = key.as_slice().try_into()
+            .expect("key is exactly 32 bytes");
+        let plain = luau_emit::stage0::encrypt_payload(&payload, key_arr);
         String::from_utf8(plain).expect("stage-1 source is UTF-8")
     }
 
