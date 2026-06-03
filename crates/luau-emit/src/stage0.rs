@@ -75,22 +75,80 @@ fn rc4_encrypt(plaintext: &[u8], key: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Optional runtime environment binding for the stage-0 key.
+/// When present, the stage-0 wrapper mixes a runtime expression value into the
+/// key at load time. The Rust side pre-folds `expected_value` into the cipher key.
+///
+/// `runtime_expr` is inserted VERBATIM as a Luau expression — trust the caller to
+/// supply valid Luau. For example: `tostring(game.PlaceId)` or `"ABC"`.
+#[derive(Debug, Clone)]
+pub struct EmitEnvBinding {
+    pub runtime_expr: String,
+    pub expected_value: String,
+}
+
+/// XOR-fold `bind` bytes into the base key, cyclically over 32 bytes.
+/// This matches the Luau `_mix` function emitted in `render_stage0` when a
+/// binding is present.
+pub fn fold_key(base: &[u8; 32], bind: &[u8]) -> [u8; 32] {
+    let mut k = *base;
+    for (i, &b) in bind.iter().enumerate() {
+        k[i % 32] ^= b;
+    }
+    k
+}
+
 /// Render the stage-0 bootstrap text given the encrypted payload + key.
 /// Caller is responsible for applying identifier mangling + comment
 /// stripping to the result if desired.
-pub fn render_stage0(encrypted_payload: &[u8], key: &[u8; 32]) -> String {
+pub fn render_stage0(encrypted_payload: &[u8], base_key: &[u8; 32], binding: Option<&EmitEnvBinding>) -> String {
     let payload_lit = crate::render::encode_luau_string_literal(encrypted_payload);
-    let key_lit = crate::render::encode_luau_string_literal(key);
-    format!(
-        r#"local _s = "{payload}"
+    match binding {
+        None => {
+            let key_lit = crate::render::encode_luau_string_literal(base_key);
+            format!(
+                r#"local _s = "{payload}"
 local _k = "{key}"
 {decrypt_fn}
 return loadstring(_d(_s))(...)
 "#,
-        payload = payload_lit,
-        key = key_lit,
-        decrypt_fn = STAGE0_DECRYPT_LUAU,
-    )
+                payload = payload_lit,
+                key = key_lit,
+                decrypt_fn = STAGE0_DECRYPT_LUAU,
+            )
+        }
+        Some(b) => {
+            let key_lit = crate::render::encode_luau_string_literal(base_key);
+            let runtime_expr = &b.runtime_expr;
+            format!(
+                r#"local _s = "{payload}"
+local _kbase = "{key}"
+local _bind = {runtime_expr}
+local function _mix(base, bind)
+    local kb = {{}}
+    for i = 1, 32 do kb[i] = string.byte(base, i) end
+    if bind ~= nil then
+        local bs = tostring(bind)
+        for i = 1, #bs do
+            local k_idx = ((i - 1) % 32) + 1
+            kb[k_idx] = bit32.bxor(kb[k_idx], string.byte(bs, i))
+        end
+    end
+    local out = {{}}
+    for i = 1, 32 do out[i] = string.char(kb[i]) end
+    return table.concat(out)
+end
+local _k = _mix(_kbase, _bind)
+{decrypt_fn}
+return loadstring(_d(_s))(...)
+"#,
+                payload = payload_lit,
+                key = key_lit,
+                runtime_expr = runtime_expr,
+                decrypt_fn = STAGE0_DECRYPT_LUAU,
+            )
+        }
+    }
 }
 
 pub fn derive_stage0_key(rng: &mut ChaCha20Rng) -> [u8; 32] {
@@ -119,10 +177,57 @@ mod tests {
     fn render_stage0_contains_loadstring_and_payload() {
         let key = [1u8; 32];
         let payload = b"return 42";
-        let text = render_stage0(payload, &key);
+        let text = render_stage0(payload, &key, None);
         assert!(text.contains("loadstring"));
         assert!(text.contains("local _s"));
         assert!(text.contains("local _k"));
+    }
+
+    #[test]
+    fn fold_key_xors_cyclically() {
+        let base = [0u8; 32];
+        let bind = b"ABCD";
+        let k = fold_key(&base, bind);
+        assert_eq!(k[0], b'A');
+        assert_eq!(k[1], b'B');
+        assert_eq!(k[2], b'C');
+        assert_eq!(k[3], b'D');
+        for i in 4..32 { assert_eq!(k[i], 0); }
+    }
+
+    #[test]
+    fn fold_key_wraps_at_32() {
+        let base = [0u8; 32];
+        let bind = vec![0xFFu8; 33];
+        let k = fold_key(&base, &bind);
+        assert_eq!(k[0], 0); // 0xFF XOR 0xFF
+        for i in 1..32 { assert_eq!(k[i], 0xFF); }
+    }
+
+    #[test]
+    fn render_stage0_no_binding_omits_mix_helpers() {
+        let key = [1u8; 32];
+        let payload = b"return 42";
+        let text = render_stage0(payload, &key, None);
+        assert!(!text.contains("_kbase"));
+        assert!(!text.contains("_bind"));
+        assert!(!text.contains("_mix"));
+        assert!(text.contains("local _k ="));  // simple direct assignment
+    }
+
+    #[test]
+    fn render_stage0_with_binding_emits_mix_helpers() {
+        let key = [1u8; 32];
+        let payload = b"return 42";
+        let binding = EmitEnvBinding {
+            runtime_expr: r#""ABC""#.to_string(),
+            expected_value: "ABC".to_string(),
+        };
+        let text = render_stage0(payload, &key, Some(&binding));
+        assert!(text.contains("_kbase"));
+        assert!(text.contains("_bind"));
+        assert!(text.contains("_mix"));
+        assert!(text.contains("local _k = _mix("));
     }
 
     #[test]

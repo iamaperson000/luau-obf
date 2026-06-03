@@ -56,9 +56,9 @@ fn run_one(source_path: &Path) -> Result<(), String> {
 
     // Determinism check against the canonical seed.
     let canonical_seed = [0xABu8; 32];
-    let r1 = obfuscate(&src, Options { seed: Some(canonical_seed) })
+    let r1 = obfuscate(&src, Options { seed: Some(canonical_seed), env_binding: None })
         .map_err(|e| format!("obfuscate (run 1): {e}"))?;
-    let r2 = obfuscate(&src, Options { seed: Some(canonical_seed) })
+    let r2 = obfuscate(&src, Options { seed: Some(canonical_seed), env_binding: None })
         .map_err(|e| format!("obfuscate (run 2): {e}"))?;
     if r1.output != r2.output {
         return Err("non-deterministic obfuscator output for fixed seed".into());
@@ -70,7 +70,7 @@ fn run_one(source_path: &Path) -> Result<(), String> {
     // rewrites that fire only ~30% of the time).
     let seeds = multi_seeds(source_path);
     for seed in &seeds {
-        let r = obfuscate(&src, Options { seed: Some(*seed) })
+        let r = obfuscate(&src, Options { seed: Some(*seed), env_binding: None })
             .map_err(|e| format!("obfuscate seed={}: {e}", hex(seed)))?;
         let out = run_luau_with_source(&r.output)
             .map_err(|e| format!("run seed={}: {e}", hex(seed)))?;

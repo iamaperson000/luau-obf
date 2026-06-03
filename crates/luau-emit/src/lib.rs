@@ -17,12 +17,16 @@ pub enum EmitError {
 }
 
 /// Top-level emit. Produces the final Luau chunk source.
-pub fn emit(program: &LirProgram, rng: &mut ChaCha20Rng) -> Result<String, EmitError> {
+pub fn emit(
+    program: &LirProgram,
+    rng: &mut ChaCha20Rng,
+    env_binding: Option<&stage0::EmitEnvBinding>,
+) -> Result<String, EmitError> {
     let mut opmap_seed = [0u8; 32];
     use rand::RngCore;
     rng.fill_bytes(&mut opmap_seed);
     let opmap = opmap::OpMap::new(&opmap_seed);
-    render::render(program, &opmap, rng)
+    render::render(program, &opmap, rng, env_binding)
 }
 
 #[cfg(test)]
@@ -39,7 +43,7 @@ mod tests {
         let mir = mir_lower(&hir).unwrap();
         let lir = lir_lower(&mir).unwrap();
         let mut rng = ChaCha20Rng::from_seed([0u8; 32]);
-        emit(&lir, &mut rng).unwrap()
+        emit(&lir, &mut rng, None).unwrap()
     }
 
     #[test]

@@ -77,6 +77,7 @@ pub fn render(
     program: &LirProgram,
     opmap: &OpMap,
     rng: &mut ChaCha20Rng,
+    binding: Option<&crate::stage0::EmitEnvBinding>,
 ) -> Result<String, EmitError> {
     // Plan 14: derive stage-0 key BEFORE any other rng consumption that
     // affects stage-1. Same seed -> same stage-0 key.
@@ -153,8 +154,22 @@ pub fn render(
     };
 
     // Plan 14: encrypt the stage-1 source and wrap it in a stage-0 bootstrap.
-    let encrypted = crate::stage0::encrypt_payload(stage1_source.as_bytes(), &stage0_key);
-    let stage0_text = crate::stage0::render_stage0(&encrypted, &stage0_key);
+    // Plan 29: if a binding is present, fold the expected value into the key
+    // before encrypting so only a host that produces the right runtime value
+    // can decrypt.
+    let (encrypt_key, stage0_text) = if let Some(b) = binding {
+        let folded = crate::stage0::fold_key(&stage0_key, b.expected_value.as_bytes());
+        let encrypted = crate::stage0::encrypt_payload(stage1_source.as_bytes(), &folded);
+        // Pass the BASE (unfolded) key to render_stage0 — the Luau _mix will
+        // reproduce the folded key at runtime using the runtime_expr.
+        let text = crate::stage0::render_stage0(&encrypted, &stage0_key, Some(b));
+        (folded, text)
+    } else {
+        let encrypted = crate::stage0::encrypt_payload(stage1_source.as_bytes(), &stage0_key);
+        let text = crate::stage0::render_stage0(&encrypted, &stage0_key, None);
+        (stage0_key, text)
+    };
+    let _ = encrypt_key; // consumed above; variable kept for clarity
 
     let stage0_stripped = crate::mangle::strip_comments(&stage0_text);
     let stage0_map = crate::mangle::build_stage0_name_map(rng);

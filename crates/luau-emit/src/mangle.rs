@@ -159,6 +159,7 @@ pub const MANGLE_TARGETS: &[&str] = &[
 /// stage-1 mangling map.
 pub const STAGE0_MANGLE_TARGETS: &[&str] = &[
     "_s", "_k", "_d", "out", "kb", "i", "b", "idx", "pos",
+    "_kbase", "_bind", "_mix", "base", "bind", "bs", "k_idx",
 ];
 
 /// Build a deterministic stage-0 mangling map: same alphabet of two-letter

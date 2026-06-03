@@ -4,10 +4,32 @@ use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use thiserror::Error;
 
+/// Runtime environment binding for the stage-0 decryption key.
+///
+/// When set, the obfuscator pre-folds `expected_value` into the stage-0 cipher
+/// key at build time. At runtime, the stage-0 wrapper evaluates `runtime_expr`
+/// (inserted VERBATIM as Luau code), mixes it into the key using the same XOR
+/// fold, and uses the result to decrypt the payload. If the runtime value
+/// differs from `expected_value`, decryption yields garbage and `loadstring`
+/// fails silently.
+///
+/// `runtime_expr` MUST be valid Luau expression syntax — no validation is
+/// performed by the obfuscator.
+#[derive(Debug, Clone)]
+pub struct EnvBinding {
+    /// Luau expression evaluated at runtime. Example: `tostring(game.PlaceId)`.
+    pub runtime_expr: String,
+    /// The value the obfuscator commits to at build time.
+    pub expected_value: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Options {
     /// 32-byte seed. If None, a random seed is generated and surfaced via `seed_used`.
     pub seed: Option<[u8; 32]>,
+    /// Optional environment binding. When `None` (the default), behavior is
+    /// identical to pre-Plan-29 builds — no runtime check is injected.
+    pub env_binding: Option<EnvBinding>,
 }
 
 #[derive(Debug, Error)]
@@ -42,7 +64,11 @@ pub fn obfuscate(source: &str, opts: Options) -> Result<ObfuscateResult, Error> 
     plan.run(&mut mir, &mut rng);
     let mut lir = luau_lir::lower::lower(&mir)?;
     luau_lir::shuffle::shuffle_constants(&mut lir, &mut rng);
-    let output = luau_emit::emit(&lir, &mut rng)?;
+    let emit_binding = opts.env_binding.as_ref().map(|b| luau_emit::stage0::EmitEnvBinding {
+        runtime_expr: b.runtime_expr.clone(),
+        expected_value: b.expected_value.clone(),
+    });
+    let output = luau_emit::emit(&lir, &mut rng, emit_binding.as_ref())?;
     Ok(ObfuscateResult { output, seed_used: seed })
 }
 
@@ -150,7 +176,7 @@ mod tests {
 
     #[test]
     fn obfuscate_simple_print() {
-        let r = obfuscate("print(1)", Options { seed: Some([1u8; 32]) }).unwrap();
+        let r = obfuscate("print(1)", Options { seed: Some([1u8; 32]), env_binding: None }).unwrap();
         assert_eq!(r.seed_used, [1u8; 32]);
         // After Plan 9 mangling, opcode names are opaque. Sanity-check
         // that "print" doesn't leak as a plaintext string literal.
@@ -160,25 +186,25 @@ mod tests {
 
     #[test]
     fn deterministic_with_fixed_seed() {
-        let a = obfuscate("local x = 1 print(x)", Options { seed: Some([7u8; 32]) }).unwrap();
-        let b = obfuscate("local x = 1 print(x)", Options { seed: Some([7u8; 32]) }).unwrap();
+        let a = obfuscate("local x = 1 print(x)", Options { seed: Some([7u8; 32]), env_binding: None }).unwrap();
+        let b = obfuscate("local x = 1 print(x)", Options { seed: Some([7u8; 32]), env_binding: None }).unwrap();
         assert_eq!(a.output, b.output);
     }
 
     #[test]
     fn different_seeds_produce_different_outputs() {
         let src = "local x = 1 + 2 print(x)";
-        let a = obfuscate(src, Options { seed: Some([1u8; 32]) }).unwrap();
-        let b = obfuscate(src, Options { seed: Some([2u8; 32]) }).unwrap();
+        let a = obfuscate(src, Options { seed: Some([1u8; 32]), env_binding: None }).unwrap();
+        let b = obfuscate(src, Options { seed: Some([2u8; 32]), env_binding: None }).unwrap();
         assert_ne!(a.output, b.output);
     }
 
     #[test]
     fn three_seeds_produce_three_distinct_outputs() {
         let src = "local function add(a, b) return a + b end print(add(3, 4))";
-        let a = obfuscate(src, Options { seed: Some([10u8; 32]) }).unwrap();
-        let b = obfuscate(src, Options { seed: Some([20u8; 32]) }).unwrap();
-        let c = obfuscate(src, Options { seed: Some([30u8; 32]) }).unwrap();
+        let a = obfuscate(src, Options { seed: Some([10u8; 32]), env_binding: None }).unwrap();
+        let b = obfuscate(src, Options { seed: Some([20u8; 32]), env_binding: None }).unwrap();
+        let c = obfuscate(src, Options { seed: Some([30u8; 32]), env_binding: None }).unwrap();
         assert_ne!(a.output, b.output);
         assert_ne!(b.output, c.output);
         assert_ne!(a.output, c.output);
@@ -189,7 +215,7 @@ mod tests {
         // Cardinal test: "print" must NOT appear in the obfuscated output.
         // Compile a program that uses print; the output should NOT contain
         // the literal string "print" inside a Luau string literal.
-        let r = obfuscate("print(\"hello\")", Options { seed: Some([55u8; 32]) }).unwrap();
+        let r = obfuscate("print(\"hello\")", Options { seed: Some([55u8; 32]), env_binding: None }).unwrap();
         // We allow the substring "print" to appear in things like comments or
         // template scaffolding; what we forbid is a Luau string literal
         // containing the word print. Check that no `"print"` substring exists.
@@ -203,14 +229,14 @@ mod tests {
     fn different_seeds_change_encrypted_byte_shape() {
         // Same source, two different seeds → the encrypted byte sequences
         // for "print" are different (because the keys are different).
-        let a = obfuscate("print(1)", Options { seed: Some([10u8; 32]) }).unwrap();
-        let b = obfuscate("print(1)", Options { seed: Some([20u8; 32]) }).unwrap();
+        let a = obfuscate("print(1)", Options { seed: Some([10u8; 32]), env_binding: None }).unwrap();
+        let b = obfuscate("print(1)", Options { seed: Some([20u8; 32]), env_binding: None }).unwrap();
         assert_ne!(a.output, b.output);
     }
 
     #[test]
     fn output_does_not_contain_op_constant_names() {
-        let r = obfuscate("print(1 + 2)", Options { seed: Some([77u8; 32]) }).unwrap();
+        let r = obfuscate("print(1 + 2)", Options { seed: Some([77u8; 32]), env_binding: None }).unwrap();
         // None of the OP_X names should survive mangling.
         for name in &["OP_LoadConst", "OP_LoadNil", "OP_Add", "OP_GetGlobal", "OP_Call", "OP_Return"] {
             assert!(!r.output.contains(name), "found {} in output", name);
@@ -219,7 +245,7 @@ mod tests {
 
     #[test]
     fn output_does_not_contain_vm_helper_names() {
-        let r = obfuscate("print(1)", Options { seed: Some([88u8; 32]) }).unwrap();
+        let r = obfuscate("print(1)", Options { seed: Some([88u8; 32]), env_binding: None }).unwrap();
         for name in &["vm_call", "read_u16", "read_i16", "_decrypt", "_KA", "_KB", "_KAS", "_KBS"] {
             assert!(!r.output.contains(name), "found {} in output", name);
         }
@@ -227,7 +253,7 @@ mod tests {
 
     #[test]
     fn output_does_not_contain_handler_comments() {
-        let r = obfuscate("print(1)", Options { seed: Some([99u8; 32]) }).unwrap();
+        let r = obfuscate("print(1)", Options { seed: Some([99u8; 32]), env_binding: None }).unwrap();
         // Banner / annotation comments from the template MUST NOT survive.
         for snippet in &[
             "Proto metadata",
@@ -262,7 +288,7 @@ mod tests {
             print(m.deposit())
             print(m.withdraw())
         "#;
-        let r = obfuscate(src, Options { seed: Some([42u8; 32]) }).unwrap();
+        let r = obfuscate(src, Options { seed: Some([42u8; 32]), env_binding: None }).unwrap();
         // Extract all _enc("...") payloads. After Plan 9 mangling, the
         // `_enc` name itself is rewritten — but the call-site syntax
         // `_xx("...")` is preserved. Search by the constant-pool form
@@ -304,7 +330,7 @@ mod tests {
     fn output_has_no_opcode_constants_block() {
         // Plan 10: the opcode table is inlined, so the output should NOT contain
         // 35 consecutive `local _xx = N` declarations of small integers.
-        let r = obfuscate("print(1 + 2)", Options { seed: Some([100u8; 32]) }).unwrap();
+        let r = obfuscate("print(1 + 2)", Options { seed: Some([100u8; 32]), env_binding: None }).unwrap();
         // Look for the canonical signature: many short `local NAME = SMALLNUM\n` lines.
         // Heuristic: count lines matching `^local _\w+ = \d+\s*$` (just an integer literal,
         // no operator). After Plan 10 there should be at most a handful (k0, k1, _KA-element
@@ -329,7 +355,7 @@ mod tests {
 
     #[test]
     fn output_has_no_top_level_meta_table() {
-        let r = obfuscate("print(1)", Options { seed: Some([170u8; 32]) }).unwrap();
+        let r = obfuscate("print(1)", Options { seed: Some([170u8; 32]), env_binding: None }).unwrap();
         // META is a renamed identifier in Plan-9's MANGLE_TARGETS, so the literal
         // "META" should never appear, AND no `local _xx = {` pattern that looks
         // like a 4-tuple-per-row table should appear at the top.
@@ -354,7 +380,7 @@ mod tests {
         // potentially nothing, if a proto has no constants).
         let r = obfuscate(
             "local function f(a) return a + 100 end print(f(25))",
-            Options { seed: Some([180u8; 32]) }
+            Options { seed: Some([180u8; 32]), env_binding: None }
         ).unwrap();
         // The numbers 100 and 25 from the source should NOT appear as bare
         // integers in CONSTS rows (they're encrypted as _cw(1, "...")).
@@ -390,7 +416,7 @@ mod tests {
         // as the bare words `true,` `false,` in a constants table.
         let r = obfuscate(
             "local function f() return true end print(f())",
-            Options { seed: Some([190u8; 32]) }
+            Options { seed: Some([190u8; 32]), env_binding: None }
         ).unwrap();
         // Heuristic: count occurrences of `true,` or `, true,` or `{ true,`
         // — these would be const-pool entries. After Plan 11, expected 0.
@@ -408,7 +434,7 @@ mod tests {
         // there should be none.
         let r = obfuscate(
             "local function f(a) return a + 100 end print(f(25)) print(true)",
-            Options { seed: Some([222u8; 32]) }
+            Options { seed: Some([222u8; 32]), env_binding: None }
         ).unwrap();
         // Hand-rolled scanner: find every `_aa(` pattern (underscore + 2
         // lowercase letters + open paren) at the start of an identifier and
@@ -454,7 +480,7 @@ mod tests {
         let r = obfuscate(
             "local function f(a) return a + 100 end \
              print(f(25)) print(true) print(\"hi\")",
-            Options { seed: Some([233u8; 32]) }
+            Options { seed: Some([233u8; 32]), env_binding: None }
         ).unwrap();
         // Plan 14: the stage-1 source is encrypted inside the wrapper.
         // Decrypt it to inspect the constant-blob structure.
@@ -533,7 +559,7 @@ mod tests {
         // any CODE entry should NOT be tightly clustered in 1..=35.
         let r = obfuscate(
             "local function f(a, b) return a + b end print(f(3, 4))",
-            Options { seed: Some([200u8; 32]) }
+            Options { seed: Some([200u8; 32]), env_binding: None }
         ).unwrap();
         // Find the first CODE entry — look for a long `"\NNN…"` string literal.
         // Extract the first string literal that has more than 10 `\NNN` escapes.
@@ -594,7 +620,7 @@ mod tests {
             "local function a(x, y) return x + y end \
              local function b(x, y) return x + y end \
              print(a(1, 2), b(3, 4))",
-            Options { seed: Some([244u8; 32]) }
+            Options { seed: Some([244u8; 32]), env_binding: None }
         ).unwrap();
         // Plan 14: bytecode entries live inside the encrypted stage-1 payload.
         // Recover the stage-1 source to scan for CODE entries.
@@ -658,7 +684,7 @@ mod tests {
 
     #[test]
     fn stage0_wrapper_present() {
-        let r = obfuscate("print(1)", Options { seed: Some([121u8; 32]) }).unwrap();
+        let r = obfuscate("print(1)", Options { seed: Some([121u8; 32]), env_binding: None }).unwrap();
         // The wrapper invokes `loadstring(...)`. Even after mangling, the
         // `loadstring` global stays unmangled (it's a Luau builtin).
         assert!(r.output.contains("loadstring"));
@@ -668,7 +694,7 @@ mod tests {
     fn dispatcher_keywords_not_in_raw_output() {
         // The stage-1 source contains the dispatcher pattern `elseif op == N then`.
         // After encryption, no such pattern should appear in the raw output.
-        let r = obfuscate("print(1 + 2)", Options { seed: Some([122u8; 32]) }).unwrap();
+        let r = obfuscate("print(1 + 2)", Options { seed: Some([122u8; 32]), env_binding: None }).unwrap();
         // After Plan-14 wrapping, the stage-1 source is encrypted. The string
         // "elseif" should appear at most once (inside our stage-0 wrapper — but
         // actually the wrapper has no `elseif`; only `if/then`). So count == 0.
@@ -682,7 +708,7 @@ mod tests {
         // Pre-Plan-14, the output had `elseif _xy == 14 then` and similar
         // arms. Post-Plan-14, no such patterns should be visible in raw text.
         let r = obfuscate("local a = 1 + 2 print(a)",
-                          Options { seed: Some([123u8; 32]) }).unwrap();
+                          Options { seed: Some([123u8; 32]), env_binding: None }).unwrap();
         // Search for any `== <integer>` pattern that looks like a dispatcher
         // arm. After stage-0 wrapping, none should appear in raw text.
         let bytes = r.output.as_bytes();
@@ -709,7 +735,7 @@ mod tests {
         // as the plain source. The differential corpus harness exercises
         // this for many programs; here we just confirm one simple case.
         let src = "print(42)";
-        let r = obfuscate(src, Options { seed: Some([124u8; 32]) }).unwrap();
+        let r = obfuscate(src, Options { seed: Some([124u8; 32]), env_binding: None }).unwrap();
         // Write the obfuscated chunk and execute it; capture stdout.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("obf.luau");
@@ -730,9 +756,9 @@ mod tests {
                    x = x - 5 \
                    x = x - 2 \
                    print(x)";
-        let a = obfuscate(src, Options { seed: Some([10u8; 32]) }).unwrap();
-        let b = obfuscate(src, Options { seed: Some([20u8; 32]) }).unwrap();
-        let c = obfuscate(src, Options { seed: Some([30u8; 32]) }).unwrap();
+        let a = obfuscate(src, Options { seed: Some([10u8; 32]), env_binding: None }).unwrap();
+        let b = obfuscate(src, Options { seed: Some([20u8; 32]), env_binding: None }).unwrap();
+        let c = obfuscate(src, Options { seed: Some([30u8; 32]), env_binding: None }).unwrap();
         // All three outputs must be distinct (variance preserved).
         assert_ne!(a.output, b.output);
         assert_ne!(b.output, c.output);
@@ -744,7 +770,7 @@ mod tests {
         // Just spot-check: an obfuscated `Sub` program produces the right
         // arithmetic answer at runtime.
         let src = "print(100 - 10 - 5 - 2)";  // 83
-        let r = obfuscate(src, Options { seed: Some([55u8; 32]) }).unwrap();
+        let r = obfuscate(src, Options { seed: Some([55u8; 32]), env_binding: None }).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("obf.luau");
         std::fs::write(&path, &r.output).unwrap();
@@ -766,9 +792,9 @@ mod tests {
                    x = x + 40 \
                    x = x + 50 \
                    print(x)";
-        let a = obfuscate(src, Options { seed: Some([10u8; 32]) }).unwrap();
-        let b = obfuscate(src, Options { seed: Some([20u8; 32]) }).unwrap();
-        let c = obfuscate(src, Options { seed: Some([30u8; 32]) }).unwrap();
+        let a = obfuscate(src, Options { seed: Some([10u8; 32]), env_binding: None }).unwrap();
+        let b = obfuscate(src, Options { seed: Some([20u8; 32]), env_binding: None }).unwrap();
+        let c = obfuscate(src, Options { seed: Some([30u8; 32]), env_binding: None }).unwrap();
         assert_ne!(a.output, b.output);
         assert_ne!(b.output, c.output);
         assert_ne!(a.output, c.output);
@@ -778,7 +804,7 @@ mod tests {
     fn add_padding_preserves_runtime_semantics() {
         // 100 + 200 + 300 = 600. Verify the obfuscated chunk prints 600.
         let src = "print(100 + 200 + 300)";
-        let r = obfuscate(src, Options { seed: Some([77u8; 32]) }).unwrap();
+        let r = obfuscate(src, Options { seed: Some([77u8; 32]), env_binding: None }).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("obf.luau");
         std::fs::write(&path, &r.output).unwrap();
@@ -799,9 +825,9 @@ mod tests {
                    x = x * 7 \
                    x = x * 11 \
                    print(x)";
-        let a = obfuscate(src, Options { seed: Some([10u8; 32]) }).unwrap();
-        let b = obfuscate(src, Options { seed: Some([20u8; 32]) }).unwrap();
-        let c = obfuscate(src, Options { seed: Some([30u8; 32]) }).unwrap();
+        let a = obfuscate(src, Options { seed: Some([10u8; 32]), env_binding: None }).unwrap();
+        let b = obfuscate(src, Options { seed: Some([20u8; 32]), env_binding: None }).unwrap();
+        let c = obfuscate(src, Options { seed: Some([30u8; 32]), env_binding: None }).unwrap();
         assert_ne!(a.output, b.output);
         assert_ne!(b.output, c.output);
         assert_ne!(a.output, c.output);
@@ -810,7 +836,7 @@ mod tests {
     #[test]
     fn mul_scatter_preserves_semantics() {
         let src = "print(7 * 11 * 13)";  // 1001
-        let r = obfuscate(src, Options { seed: Some([88u8; 32]) }).unwrap();
+        let r = obfuscate(src, Options { seed: Some([88u8; 32]), env_binding: None }).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("obf.luau");
         std::fs::write(&path, &r.output).unwrap();
@@ -832,9 +858,9 @@ mod tests {
             end
             print(check(1), check(-1), check(0))
         ";
-        let a = obfuscate(src, Options { seed: Some([10u8; 32]) }).unwrap();
-        let b = obfuscate(src, Options { seed: Some([20u8; 32]) }).unwrap();
-        let c = obfuscate(src, Options { seed: Some([30u8; 32]) }).unwrap();
+        let a = obfuscate(src, Options { seed: Some([10u8; 32]), env_binding: None }).unwrap();
+        let b = obfuscate(src, Options { seed: Some([20u8; 32]), env_binding: None }).unwrap();
+        let c = obfuscate(src, Options { seed: Some([30u8; 32]), env_binding: None }).unwrap();
         assert_ne!(a.output, b.output);
         assert_ne!(b.output, c.output);
         assert_ne!(a.output, c.output);
@@ -855,7 +881,7 @@ mod tests {
             end
             print(total)
         ";
-        let r = obfuscate(src, Options { seed: Some([99u8; 32]) }).unwrap();
+        let r = obfuscate(src, Options { seed: Some([99u8; 32]), env_binding: None }).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("obf.luau");
         std::fs::write(&path, &r.output).unwrap();
@@ -871,9 +897,9 @@ mod tests {
     #[test]
     fn const_decompose_changes_output() {
         let src = "print(123, 456, 789, 1000, 2025)";
-        let a = obfuscate(src, Options { seed: Some([10u8; 32]) }).unwrap();
-        let b = obfuscate(src, Options { seed: Some([20u8; 32]) }).unwrap();
-        let c = obfuscate(src, Options { seed: Some([30u8; 32]) }).unwrap();
+        let a = obfuscate(src, Options { seed: Some([10u8; 32]), env_binding: None }).unwrap();
+        let b = obfuscate(src, Options { seed: Some([20u8; 32]), env_binding: None }).unwrap();
+        let c = obfuscate(src, Options { seed: Some([30u8; 32]), env_binding: None }).unwrap();
         assert_ne!(a.output, b.output);
         assert_ne!(b.output, c.output);
         assert_ne!(a.output, c.output);
@@ -884,7 +910,7 @@ mod tests {
         // Sum of small constants — verify the output is exact across seeds.
         let src = "print(1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10)";  // 55
         for seed_byte in [11u8, 47, 99, 200] {
-            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]) }).unwrap();
+            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]), env_binding: None }).unwrap();
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("obf.luau");
             std::fs::write(&path, &r.output).unwrap();
@@ -908,9 +934,9 @@ mod tests {
             end
             print(sum)
         ";
-        let a = obfuscate(src, Options { seed: Some([10u8; 32]) }).unwrap();
-        let b = obfuscate(src, Options { seed: Some([20u8; 32]) }).unwrap();
-        let c = obfuscate(src, Options { seed: Some([30u8; 32]) }).unwrap();
+        let a = obfuscate(src, Options { seed: Some([10u8; 32]), env_binding: None }).unwrap();
+        let b = obfuscate(src, Options { seed: Some([20u8; 32]), env_binding: None }).unwrap();
+        let c = obfuscate(src, Options { seed: Some([30u8; 32]), env_binding: None }).unwrap();
         assert_ne!(a.output, b.output);
         assert_ne!(b.output, c.output);
         assert_ne!(a.output, c.output);
@@ -927,7 +953,7 @@ mod tests {
             print(product)
         "; // 6! = 720
         for seed_byte in [12u8, 50, 130, 240] {
-            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]) }).unwrap();
+            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]), env_binding: None }).unwrap();
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("obf.luau");
             std::fs::write(&path, &r.output).unwrap();
@@ -951,9 +977,9 @@ mod tests {
             end
             print(fact(5))
         ";
-        let a = obfuscate(src, Options { seed: Some([10u8; 32]) }).unwrap();
-        let b = obfuscate(src, Options { seed: Some([20u8; 32]) }).unwrap();
-        let c = obfuscate(src, Options { seed: Some([30u8; 32]) }).unwrap();
+        let a = obfuscate(src, Options { seed: Some([10u8; 32]), env_binding: None }).unwrap();
+        let b = obfuscate(src, Options { seed: Some([20u8; 32]), env_binding: None }).unwrap();
+        let c = obfuscate(src, Options { seed: Some([30u8; 32]), env_binding: None }).unwrap();
         assert_ne!(a.output, b.output);
         assert_ne!(b.output, c.output);
         assert_ne!(a.output, c.output);
@@ -969,7 +995,7 @@ mod tests {
             print(fact(5))
         "; // 120
         for seed_byte in [13u8, 67, 144, 222] {
-            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]) }).unwrap();
+            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]), env_binding: None }).unwrap();
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("obf.luau");
             std::fs::write(&path, &r.output).unwrap();
@@ -993,9 +1019,9 @@ mod tests {
             end
             print(classify(-5), classify(0), classify(5))
         ";
-        let a = obfuscate(src, Options { seed: Some([10u8; 32]) }).unwrap();
-        let b = obfuscate(src, Options { seed: Some([20u8; 32]) }).unwrap();
-        let c = obfuscate(src, Options { seed: Some([30u8; 32]) }).unwrap();
+        let a = obfuscate(src, Options { seed: Some([10u8; 32]), env_binding: None }).unwrap();
+        let b = obfuscate(src, Options { seed: Some([20u8; 32]), env_binding: None }).unwrap();
+        let c = obfuscate(src, Options { seed: Some([30u8; 32]), env_binding: None }).unwrap();
         assert_ne!(a.output, b.output);
         assert_ne!(b.output, c.output);
         assert_ne!(a.output, c.output);
@@ -1012,7 +1038,7 @@ mod tests {
             print(classify(-5), classify(0), classify(5))
         ";
         for seed_byte in [14u8, 70, 150, 230] {
-            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]) }).unwrap();
+            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]), env_binding: None }).unwrap();
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("obf.luau");
             std::fs::write(&path, &r.output).unwrap();
@@ -1036,9 +1062,9 @@ mod tests {
             end
             print(tri(10))
         ";
-        let a = obfuscate(src, Options { seed: Some([10u8; 32]) }).unwrap();
-        let b = obfuscate(src, Options { seed: Some([20u8; 32]) }).unwrap();
-        let c = obfuscate(src, Options { seed: Some([30u8; 32]) }).unwrap();
+        let a = obfuscate(src, Options { seed: Some([10u8; 32]), env_binding: None }).unwrap();
+        let b = obfuscate(src, Options { seed: Some([20u8; 32]), env_binding: None }).unwrap();
+        let c = obfuscate(src, Options { seed: Some([30u8; 32]), env_binding: None }).unwrap();
         assert_ne!(a.output, b.output);
         assert_ne!(b.output, c.output);
         assert_ne!(a.output, c.output);
@@ -1055,7 +1081,7 @@ mod tests {
             print(tri(10))
         "; // 55
         for seed_byte in [16u8, 90, 170, 252] {
-            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]) }).unwrap();
+            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]), env_binding: None }).unwrap();
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("obf.luau");
             std::fs::write(&path, &r.output).unwrap();
@@ -1080,9 +1106,9 @@ mod tests {
             end
             print(total)
         ";
-        let a = obfuscate(src, Options { seed: Some([10u8; 32]) }).unwrap();
-        let b = obfuscate(src, Options { seed: Some([20u8; 32]) }).unwrap();
-        let c = obfuscate(src, Options { seed: Some([30u8; 32]) }).unwrap();
+        let a = obfuscate(src, Options { seed: Some([10u8; 32]), env_binding: None }).unwrap();
+        let b = obfuscate(src, Options { seed: Some([20u8; 32]), env_binding: None }).unwrap();
+        let c = obfuscate(src, Options { seed: Some([30u8; 32]), env_binding: None }).unwrap();
         assert_ne!(a.output, b.output);
         assert_ne!(b.output, c.output);
         assert_ne!(a.output, c.output);
@@ -1100,7 +1126,7 @@ mod tests {
             print(total)
         "; // sum_{i=1..10} sum_{j=1..10} i*j = (sum i)^2 = 55^2 = 3025
         for seed_byte in [15u8, 80, 160, 250] {
-            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]) }).unwrap();
+            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]), env_binding: None }).unwrap();
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("obf.luau");
             std::fs::write(&path, &r.output).unwrap();
@@ -1125,9 +1151,9 @@ mod tests {
             end
             print(pow2(10))
         ";
-        let a = obfuscate(src, Options { seed: Some([10u8; 32]) }).unwrap();
-        let b = obfuscate(src, Options { seed: Some([20u8; 32]) }).unwrap();
-        let c = obfuscate(src, Options { seed: Some([30u8; 32]) }).unwrap();
+        let a = obfuscate(src, Options { seed: Some([10u8; 32]), env_binding: None }).unwrap();
+        let b = obfuscate(src, Options { seed: Some([20u8; 32]), env_binding: None }).unwrap();
+        let c = obfuscate(src, Options { seed: Some([30u8; 32]), env_binding: None }).unwrap();
         assert_ne!(a.output, b.output);
         assert_ne!(b.output, c.output);
         assert_ne!(a.output, c.output);
@@ -1144,7 +1170,7 @@ mod tests {
             print(pow2(10))
         "; // expect 1024
         for seed_byte in [13u8, 73, 137, 211] {
-            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]) }).unwrap();
+            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]), env_binding: None }).unwrap();
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("obf.luau");
             std::fs::write(&path, &r.output).unwrap();
@@ -1167,7 +1193,7 @@ mod tests {
             print(greet(ten()))
         ";
         for seed_byte in [13u8, 73, 137, 211] {
-            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]) }).unwrap();
+            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]), env_binding: None }).unwrap();
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("obf.luau");
             std::fs::write(&path, &r.output).unwrap();
@@ -1189,7 +1215,7 @@ mod tests {
             print(pow2(10))
         "; // 1024
         for seed_byte in [17u8, 95, 175, 255] {
-            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]) }).unwrap();
+            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]), env_binding: None }).unwrap();
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("obf.luau");
             std::fs::write(&path, &r.output).unwrap();
@@ -1203,6 +1229,53 @@ mod tests {
         }
     }
 
+    // ── Plan 29 acceptance tests ──────────────────────────────────────────────
+
+    #[test]
+    fn env_binding_match_decrypts() {
+        let src = "print(123)";
+        let bind = EnvBinding {
+            runtime_expr: r#""ABC""#.to_string(),
+            expected_value: "ABC".to_string(),
+        };
+        let r = obfuscate(src, Options { seed: Some([7u8; 32]), env_binding: Some(bind) }).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("obf.luau");
+        std::fs::write(&path, &r.output).unwrap();
+        let out = std::process::Command::new("luau").arg(&path).output().unwrap();
+        assert!(out.status.success(), "luau failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(String::from_utf8_lossy(&out.stdout).contains("123"));
+    }
+
+    #[test]
+    fn env_binding_mismatch_fails() {
+        let src = "print(\"DO_NOT_PRINT_THIS_STRING\")";
+        let bind = EnvBinding {
+            runtime_expr: r#""WRONG""#.to_string(),
+            expected_value: "RIGHT".to_string(),
+        };
+        let r = obfuscate(src, Options { seed: Some([7u8; 32]), env_binding: Some(bind) }).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("obf.luau");
+        std::fs::write(&path, &r.output).unwrap();
+        let out = std::process::Command::new("luau").arg(&path).output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(!stdout.contains("DO_NOT_PRINT_THIS_STRING"),
+            "binding mismatch should not have printed the original string; stdout={:?}", stdout);
+    }
+
+    #[test]
+    fn env_binding_default_off_unchanged() {
+        let src = "print(7)";
+        let r = obfuscate(src, Options { seed: Some([42u8; 32]), env_binding: None }).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("obf.luau");
+        std::fs::write(&path, &r.output).unwrap();
+        let out = std::process::Command::new("luau").arg(&path).output().unwrap();
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("7"));
+    }
+
     #[test]
     fn stage0_rc4_round_trips() {
         let src = "
@@ -1214,7 +1287,7 @@ mod tests {
             print(pow2(10))
         "; // 1024
         for seed_byte in [11u8, 22, 33, 44] {
-            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]) }).unwrap();
+            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]), env_binding: None }).unwrap();
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("obf.luau");
             std::fs::write(&path, &r.output).unwrap();

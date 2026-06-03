@@ -1,5 +1,5 @@
 use clap::Parser;
-use luau_obf::{obfuscate, Options};
+use luau_obf::{obfuscate, EnvBinding, Options};
 use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -18,6 +18,15 @@ struct Args {
     /// Suppress progress on stderr.
     #[arg(long = "quiet")]
     quiet: bool,
+    /// Luau expression evaluated at runtime as the environment binding key
+    /// contribution (e.g. `tostring(game.PlaceId)`). Must be paired with
+    /// --env-bind-expected.
+    #[arg(long = "env-bind-expr", requires = "env_bind_expected")]
+    env_bind_expr: Option<String>,
+    /// The string value the obfuscator commits to at build time. Must be
+    /// paired with --env-bind-expr.
+    #[arg(long = "env-bind-expected", requires = "env_bind_expr")]
+    env_bind_expected: Option<String>,
 }
 
 fn parse_seed(s: &str) -> Result<[u8; 32], String> {
@@ -57,7 +66,11 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let opts = Options { seed };
+    let env_binding = match (args.env_bind_expr, args.env_bind_expected) {
+        (Some(expr), Some(expected)) => Some(EnvBinding { runtime_expr: expr, expected_value: expected }),
+        _ => None,
+    };
+    let opts = Options { seed, env_binding };
     match obfuscate(&source, opts) {
         Ok(result) => {
             if !args.quiet {

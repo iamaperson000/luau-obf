@@ -32,7 +32,7 @@ pub fn obfuscate_js(source: &str, seed_hex: Option<String>) -> JsValue {
         Err(e) => return err(&e),
     };
 
-    match obfuscate(source, Options { seed }) {
+    match obfuscate(source, Options { seed, env_binding: None }) {
         Ok(r) => match serde_wasm_bindgen::to_value(&ObfuscateOk {
             ok: true,
             output: r.output,
