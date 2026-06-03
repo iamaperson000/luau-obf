@@ -2,13 +2,11 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 21 — junk arithmetic dead-store injection. Each MIR
-basic block has a 30% chance of receiving a 4-instruction synthetic
-arithmetic chain (LoadConst, LoadConst, Add, Mul) at a seed-determined
-position. The four fresh VLocals are never read — a static analyzer must
-do liveness analysis to identify them as dead. Combined with Plans 16-17,
-the inserted Add and Mul are themselves scattered into operand-padded
-forms, so a single junk chain compiles to 10+ bytecode instructions.
+**Status:** Plan 22 — comparison-operator commute. Each comparison BinOp
+(<, <=, >, >=, ==, ~=) has a 40% chance of being commuted: operands
+swapped and the operator flipped to the symmetric form. Bit-exact for
+all Luau values including NaN and metatable __lt/__le/__eq. Subsequent
+plans wrap return paths (Plan 23) and enrich junk blocks (Plan 24).
 
 ## Build
 
