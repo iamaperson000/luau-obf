@@ -54,22 +54,70 @@ fn run_one(source_path: &Path) -> Result<(), String> {
     let src = fs::read_to_string(source_path).map_err(|e| format!("read source: {e}"))?;
     let plain = run_luau_with_source(&src)?;
 
-    let seed = [0xABu8; 32];
-    let r1 = obfuscate(&src, Options { seed: Some(seed) })
+    // Determinism check against the canonical seed.
+    let canonical_seed = [0xABu8; 32];
+    let r1 = obfuscate(&src, Options { seed: Some(canonical_seed) })
         .map_err(|e| format!("obfuscate (run 1): {e}"))?;
-    let r2 = obfuscate(&src, Options { seed: Some(seed) })
+    let r2 = obfuscate(&src, Options { seed: Some(canonical_seed) })
         .map_err(|e| format!("obfuscate (run 2): {e}"))?;
     if r1.output != r2.output {
         return Err("non-deterministic obfuscator output for fixed seed".into());
     }
 
-    let obfuscated_output = run_luau_with_source(&r1.output)?;
-    if plain != obfuscated_output {
-        return Err(format!(
-            "output mismatch:\n  plain: {plain:?}\n  obfus: {obfuscated_output:?}"
-        ));
+    // Multi-seed differential: every chosen seed must yield bit-identical
+    // stdout to the plain Luau interpreter. Catches per-seed obfuscation
+    // bugs that don't trip on the canonical seed (e.g. probabilistic
+    // rewrites that fire only ~30% of the time).
+    let seeds = multi_seeds(source_path);
+    for seed in &seeds {
+        let r = obfuscate(&src, Options { seed: Some(*seed) })
+            .map_err(|e| format!("obfuscate seed={}: {e}", hex(seed)))?;
+        let out = run_luau_with_source(&r.output)
+            .map_err(|e| format!("run seed={}: {e}", hex(seed)))?;
+        if plain != out {
+            return Err(format!(
+                "output mismatch under seed {}:\n  plain: {plain:?}\n  obfus: {out:?}",
+                hex(seed)
+            ));
+        }
     }
     Ok(())
+}
+
+/// 8 deterministic, per-program seeds derived from the file path. Stable across
+/// runs (so failures are reproducible) but distinct per program (so a single
+/// hardcoded seed doesn't mask per-seed bugs).
+fn multi_seeds(source_path: &Path) -> Vec<[u8; 32]> {
+    use std::hash::{Hash, Hasher};
+    let file_name = source_path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let mut out = Vec::with_capacity(8);
+    // Always include the canonical seed first.
+    out.push([0xABu8; 32]);
+    for i in 0u8..7 {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        file_name.hash(&mut h);
+        i.hash(&mut h);
+        let mut seed = [0u8; 32];
+        // Fill the seed by repeatedly hashing.
+        let mut h_state = h.finish();
+        for chunk in seed.chunks_mut(8) {
+            chunk.copy_from_slice(&h_state.to_le_bytes());
+            // Re-mix.
+            let mut h2 = std::collections::hash_map::DefaultHasher::new();
+            h_state.hash(&mut h2);
+            h_state = h2.finish();
+        }
+        out.push(seed);
+    }
+    out
+}
+
+fn hex(b: &[u8; 32]) -> String {
+    let mut s = String::with_capacity(64);
+    for byte in b {
+        s.push_str(&format!("{:02x}", byte));
+    }
+    s
 }
 
 fn run_luau_with_source(source: &str) -> Result<String, String> {
