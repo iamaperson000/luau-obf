@@ -1325,4 +1325,26 @@ mod tests {
             assert!(stdout.contains("1024"), "seed {}: got {:?}", seed_byte, stdout);
         }
     }
+
+    #[test]
+    fn dispatcher_split_round_trips() {
+        let src = "
+            local function pow2(n)
+                local r = 1
+                for _ = 1, n do r = r * 2 end
+                return r
+            end
+            print(pow2(10))
+        "; // 1024
+        for seed_byte in [5u8, 50, 100, 250] {
+            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]), env_binding: None }).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("obf.luau");
+            std::fs::write(&path, &r.output).unwrap();
+            let out = std::process::Command::new("luau").arg(&path).output().unwrap();
+            assert!(out.status.success(), "seed {}: luau failed: {}", seed_byte, String::from_utf8_lossy(&out.stderr));
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(stdout.contains("1024"), "seed {}: got {:?}", seed_byte, stdout);
+        }
+    }
 }
