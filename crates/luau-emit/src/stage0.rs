@@ -39,6 +39,23 @@ const STAGE0_DECRYPT_LUAU: &str = r#"local function _d(s)
     return table.concat(out)
 end"#;
 
+/// The Luau _mix(base, bind) function that folds a runtime-provided value into the
+/// stage-0 key via XOR. Used in render_stage0 when a binding is present.
+const STAGE0_MIX_LUAU: &str = r#"local function _mix(base, bind)
+    local kb = {}
+    for i = 1, 32 do kb[i] = string.byte(base, i) end
+    if bind ~= nil then
+        local bs = tostring(bind)
+        for i = 1, #bs do
+            local k_idx = ((i - 1) % 32) + 1
+            kb[k_idx] = bit32.bxor(kb[k_idx], string.byte(bs, i))
+        end
+    end
+    local out = {}
+    for i = 1, 32 do out[i] = string.char(kb[i]) end
+    return table.concat(out)
+end"#;
+
 /// Encrypt (or decrypt — symmetric) the stage-1 source using RC4 with a
 /// 256-byte keystream drop to defeat the positional-bucketing attack.
 pub fn encrypt_payload(plaintext: &[u8], key: &[u8; 32]) -> Vec<u8> {
@@ -124,20 +141,7 @@ return loadstring(_d(_s))(...)
                 r#"local _s = "{payload}"
 local _kbase = "{key}"
 local _bind = {runtime_expr}
-local function _mix(base, bind)
-    local kb = {{}}
-    for i = 1, 32 do kb[i] = string.byte(base, i) end
-    if bind ~= nil then
-        local bs = tostring(bind)
-        for i = 1, #bs do
-            local k_idx = ((i - 1) % 32) + 1
-            kb[k_idx] = bit32.bxor(kb[k_idx], string.byte(bs, i))
-        end
-    end
-    local out = {{}}
-    for i = 1, 32 do out[i] = string.char(kb[i]) end
-    return table.concat(out)
-end
+{mix_fn}
 local _k = _mix(_kbase, _bind)
 {decrypt_fn}
 return loadstring(_d(_s))(...)
@@ -145,6 +149,7 @@ return loadstring(_d(_s))(...)
                 payload = payload_lit,
                 key = key_lit,
                 runtime_expr = runtime_expr,
+                mix_fn = STAGE0_MIX_LUAU,
                 decrypt_fn = STAGE0_DECRYPT_LUAU,
             )
         }
