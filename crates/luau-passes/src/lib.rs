@@ -11,6 +11,7 @@ pub mod analysis;
 pub mod identity;
 pub mod expr_mangle;
 pub mod add_padding;
+pub mod mul_padding;
 // but how?
 /// A MIR→MIR transform.
 pub trait Pass {
@@ -68,4 +69,5 @@ pub fn default_plan() -> PassPlan {
         .push(Box::new(identity::Identity))
         .push(Box::new(expr_mangle::ExpressionMangle))
         .push(Box::new(add_padding::AddIdentityPadding))
+        .push(Box::new(mul_padding::MulOperandScatter))
 }
