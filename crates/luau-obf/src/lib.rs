@@ -899,4 +899,47 @@ mod tests {
                 seed_byte, stdout);
         }
     }
+
+    #[test]
+    fn opaque_predicate_changes_output() {
+        let src = "
+            local sum = 0
+            for i = 1, 5 do
+                sum = sum + i
+            end
+            print(sum)
+        ";
+        let a = obfuscate(src, Options { seed: Some([10u8; 32]) }).unwrap();
+        let b = obfuscate(src, Options { seed: Some([20u8; 32]) }).unwrap();
+        let c = obfuscate(src, Options { seed: Some([30u8; 32]) }).unwrap();
+        assert_ne!(a.output, b.output);
+        assert_ne!(b.output, c.output);
+        assert_ne!(a.output, c.output);
+    }
+
+    #[test]
+    fn opaque_predicate_preserves_semantics() {
+        // Loop summation — verify every tested seed produces correct output.
+        let src = "
+            local product = 1
+            for i = 1, 6 do
+                product = product * i
+            end
+            print(product)
+        "; // 6! = 720
+        for seed_byte in [12u8, 50, 130, 240] {
+            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]) }).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("obf.luau");
+            std::fs::write(&path, &r.output).unwrap();
+            let out = std::process::Command::new("luau").arg(&path).output().unwrap();
+            assert!(out.status.success(),
+                "seed {}: luau exited {:?}; stderr: {}",
+                seed_byte, out.status, String::from_utf8_lossy(&out.stderr));
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(stdout.contains("720"),
+                "seed {}: expected '720', got: {}",
+                seed_byte, stdout);
+        }
+    }
 }
