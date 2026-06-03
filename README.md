@@ -2,11 +2,13 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 22 — comparison-operator commute. Each comparison BinOp
-(<, <=, >, >=, ==, ~=) has a 40% chance of being commuted: operands
-swapped and the operator flipped to the symmetric form. Bit-exact for
-all Luau values including NaN and metatable __lt/__le/__eq. Subsequent
-plans wrap return paths (Plan 23) and enrich junk blocks (Plan 24).
+**Status:** Plan 23 — Goto trampoline insertion. Each `Goto(target)`
+terminator has a 30% chance of being rerouted through an empty
+intermediate block whose terminator points to the original target. The
+CFG gains one block and one indirect hop per insertion, while runtime
+behavior is unchanged. Combined with Plan 20's opaque-true wrapping,
+trampolines may themselves be wrapped — turning a single `Goto` into a
+two-hop opaque-branch chain.
 
 ## Build
 
