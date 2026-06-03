@@ -2,12 +2,14 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 24 — synthetic Move insertion. Each MIR basic block has
-a 25% chance of receiving a dead Move from the block's first writer to
-a fresh VLocal. Adds Move opcodes throughout the bytecode without
-changing semantics. Combined with Plan 21's junk arithmetic, every
-block has stochastic dead-store payload that a deobfuscator must
-liveness-analyze.
+**Status:** Plan 25 — junk Sub-chain insertion (final pass in the
+Plans-16-25 mangling family). Each MIR basic block has a 20% chance of
+receiving a 4-instruction synthetic Sub chain at a seed-random position.
+Symmetric to Plan 21's Add/Mul chain. Combined with Plans 15-24, the
+obfuscated bytecode contains stochastic dead-store payload (Move, Add,
+Mul, Sub), opaque-true branches with junk blocks, Goto trampolines,
+operand-padded arithmetic, commuted comparisons, polarity-flipped
+branches, and decomposed constants — all per-build-seeded.
 
 ## Build
 
