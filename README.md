@@ -2,15 +2,14 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 15 — first real MIR-level obfuscation pass. Each `Sub`
-instruction is rewritten as `Neg + Add` with 50% probability per instance
-(seed-derived). The bytecode no longer 1:1 maps to source-level operators:
-a disassembler sees a mix of real `Sub` ops and `Sub`-via-`Neg+Add`
-sequences, and can't be sure from the bytecode alone which subtractions in
-the original program correspond to which. The luau-passes infrastructure
-from Plan 7 is now exercised end-to-end; subsequent plans will add more
-rewrites (Add identity-padding, Mul shifts, opaque predicates, control-flow
-flattening).
+**Status:** Plan 16 — Add identity-padding shipped. Each `Add` instruction
+is rewritten with 30% probability as `(a + k) + (b − k)` with a seed-derived
+integer `k`. Combined with Plan 15's `Sub → Neg + Add` rewrite, neither
+additive operator maps cleanly to a single bytecode instruction; a static
+analyser must reconstruct which arithmetic ops are real and which are
+identity padding. Subsequent plans extend the expression-mangling family
+(Mul rewrites, boolean mangling, constant decomposition) before moving to
+control-flow obfuscation (opaque predicates, junk blocks, flattening).
 
 ## Build
 
