@@ -2,12 +2,12 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 10 — opcode bytes are inlined directly into the dispatcher
-(the 35-line opcode-constants block is gone) and bytecode bytes themselves are
-XOR-encoded per build against a position-mixed keystream. Static analysis of
-the obfuscated output no longer sees a labeled VM, no longer sees an opcode
-table, and `string.byte` over a `CODE[i]` entry returns pseudo-random bytes
-rather than the underlying opcode stream. Full corpus passes under every seed.
+**Status:** Plan 11 — constant pool and proto-header uniformity. The top-level
+META table is gone (proto headers fold into each function's encrypted bytecode
+prologue). Every constant of every type is uniformly wrapped as `_cw(tag,
+bytes)` — strings, numbers, booleans, and nil all encrypt the same way, so
+reading the constant pool no longer tells you "this proto has N strings and
+M numbers." Full differential corpus still passes under every seed.
 
 ## Build
 
