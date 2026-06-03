@@ -18,6 +18,7 @@ pub mod opaque_predicate;
 pub mod junk_arith;
 pub mod comparison_commute;
 pub mod goto_trampoline;
+pub mod synth_move;
 // but how?
 /// A MIR→MIR transform.
 pub trait Pass {
@@ -81,5 +82,6 @@ pub fn default_plan() -> PassPlan {
         .push(Box::new(goto_trampoline::GotoTrampoline))
         .push(Box::new(mul_padding::MulOperandScatter))
         .push(Box::new(comparison_commute::ComparisonCommute))
+        .push(Box::new(synth_move::SyntheticMove))
         .push(Box::new(branch_polarity::BranchPolarityFlip))
 }
