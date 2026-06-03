@@ -2,13 +2,13 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 13 — per-proto opcode byte permutation. Each function now
-has its own permutation of the 35 opcode bytes, stored encrypted in its
-bytecode prologue. The same logical operation (e.g. ADD) is emitted as
-different bytecode bytes in different protos within the same chunk, so the
-deobfuscator must extract and apply each proto's permutation before
-disassembly. Dispatcher arm order is unchanged (deferred to a later plan).
-Full differential corpus passes under every seed.
+**Status:** Plan 14 — the entire VM (dispatcher, helpers, constant pool, bytecode)
+is now wrapped in a stage-0 self-decrypting bootstrap. The raw output file
+contains only a small XOR decryption helper, a 32-byte key, an encrypted
+payload string, and a `loadstring(decrypt(payload))(...)` invocation. A
+reader cannot statically see the dispatcher, opcode handlers, encryption
+constants, or bytecode without first executing the stage-0 decryption.
+Plans 1–13 features unchanged; full corpus passes under every seed.
 
 ## Build
 
