@@ -2,15 +2,13 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 20 — opaque-true predicates. Each unconditional `Goto`
-in the MIR is candidate for being wrapped in a `Branch { cond: δ*δ > 0,
-then: target, else: junk_block }`, where δ is a seed-derived integer in
-[1, 65535]. The else branch points to a per-function junk block holding
-~3 dead `LoadConst` instructions and a `Return(None)`. At runtime the
-opaque is always true; statically the analyzer must constant-propagate
-the Mul + Gt + δ value to prove it. The junk block compiles to bytecode
-but is never executed. Combined with Plans 17-18 (Mul scatter + branch
-polarity), the opaque Mul and Branch are themselves further mangled.
+**Status:** Plan 21 — junk arithmetic dead-store injection. Each MIR
+basic block has a 30% chance of receiving a 4-instruction synthetic
+arithmetic chain (LoadConst, LoadConst, Add, Mul) at a seed-determined
+position. The four fresh VLocals are never read — a static analyzer must
+do liveness analysis to identify them as dead. Combined with Plans 16-17,
+the inserted Add and Mul are themselves scattered into operand-padded
+forms, so a single junk chain compiles to 10+ bytecode instructions.
 
 ## Build
 
