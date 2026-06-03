@@ -318,6 +318,131 @@ mod tests {
     }
 
     #[test]
+    fn cw_calls_have_exactly_one_argument() {
+        // Plan 12: _cw(...) takes only the encrypted blob, no type tag.
+        // After mangling, _cw is some `_xx` — but its call shape
+        // `_xx("<bytes>")` should still be visible. Look for any
+        // `_xx(N, "...")` form where N is a small integer (the old tag) —
+        // there should be none.
+        let r = obfuscate(
+            "local function f(a) return a + 100 end print(f(25)) print(true)",
+            Options { seed: Some([222u8; 32]) }
+        ).unwrap();
+        // Hand-rolled scanner: find every `_aa(` pattern (underscore + 2
+        // lowercase letters + open paren) at the start of an identifier and
+        // count occurrences where the next non-whitespace char is a digit
+        // followed by `, "` — the old _cw(tag, "bytes") shape.
+        let bytes = r.output.as_bytes();
+        let mut i = 0;
+        let mut bad_call_count = 0;
+        while i + 6 < bytes.len() {
+            if bytes[i] == b'_'
+                && bytes[i + 1].is_ascii_lowercase()
+                && bytes[i + 2].is_ascii_lowercase()
+                && bytes[i + 3] == b'('
+            {
+                if i == 0
+                    || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_')
+                {
+                    let next = bytes[i + 4];
+                    if next.is_ascii_digit()
+                        && i + 7 < bytes.len()
+                        && bytes[i + 5] == b','
+                        && bytes[i + 6] == b' '
+                        && bytes[i + 7] == b'"'
+                    {
+                        bad_call_count += 1;
+                    }
+                }
+                i += 4;
+                continue;
+            }
+            i += 1;
+        }
+        assert_eq!(bad_call_count, 0,
+            "{} suspicious `_xx(N, \"…\")` wrappers found — _cw should now be 1-arg",
+            bad_call_count);
+    }
+
+    #[test]
+    fn output_blobs_are_uniform_length() {
+        // Find all string literals that appear inside `_xx("…")` single-arg
+        // calls (the wrapper shape after Plan 12). Their decoded byte
+        // length should all be exactly BLOB_SIZE (64 bytes in this build).
+        let r = obfuscate(
+            "local function f(a) return a + 100 end \
+             print(f(25)) print(true) print(\"hi\")",
+            Options { seed: Some([233u8; 32]) }
+        ).unwrap();
+        // Crude extraction: find every `_xx("…")` and decode the `\NNN`
+        // escapes to count the actual byte length.
+        let mut blob_lengths: Vec<usize> = Vec::new();
+        let bytes = r.output.as_bytes();
+        let mut i = 0;
+        while i + 6 < bytes.len() {
+            if bytes[i] == b'_'
+                && bytes[i + 1].is_ascii_lowercase()
+                && bytes[i + 2].is_ascii_lowercase()
+                && bytes[i + 3] == b'('
+                && bytes[i + 4] == b'"'
+            {
+                if i == 0
+                    || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_')
+                {
+                    let mut j = i + 5;
+                    let mut byte_count = 0;
+                    while j < bytes.len() && bytes[j] != b'"' {
+                        if bytes[j] == b'\\' && j + 1 < bytes.len() {
+                            if bytes[j + 1].is_ascii_digit() {
+                                // `\NNN` form — skip 4 chars total
+                                // (`\` + 3 digits).
+                                j += 4;
+                                byte_count += 1;
+                            } else {
+                                // `\\`, `\"`, `\n`, etc — escape + 1 char.
+                                j += 2;
+                                byte_count += 1;
+                            }
+                        } else {
+                            j += 1;
+                            byte_count += 1;
+                        }
+                    }
+                    // Confirm the call closes with `")` to filter false
+                    // positives such as a literal inside another expression.
+                    if j + 1 < bytes.len() && bytes[j] == b'"' && bytes[j + 1] == b')' {
+                        blob_lengths.push(byte_count);
+                    }
+                    i = j;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        // Filter to plausible blob sizes — bytecode CODE entries can also
+        // appear as single-arg string literals (e.g. via `_tconcat(..)`
+        // calls in the runtime, though those usually have multi-arg
+        // signatures). The CODE entries themselves live in a top-level
+        // table literal `{ "…", "…" }` (not a call), so they should not
+        // match our `_xx("…")` pattern at all. To be defensive, we filter
+        // to lengths ≤ 128 — anything larger is almost certainly bytecode.
+        let blobs: Vec<usize> = blob_lengths.iter().copied().filter(|&n| n <= 128).collect();
+        assert!(!blobs.is_empty(), "no constant blobs found in output");
+        // Every constant blob should be exactly BLOB_SIZE bytes (32 or 64).
+        for n in &blobs {
+            assert!(*n == 32 || *n == 64,
+                "blob length {} is not a uniform constant-blob size", n);
+        }
+        // Stronger: all blobs in a single build should have the same length.
+        let first = blobs[0];
+        for n in &blobs {
+            assert_eq!(*n, first,
+                "constant blobs are not uniformly sized: found {} and {}",
+                first, n);
+        }
+    }
+
+    #[test]
     fn bytecode_bytes_are_not_small_opcode_set() {
         // Plan 10: bytecode bytes are XOR-encoded, so the BYTE DISTRIBUTION inside
         // any CODE entry should NOT be tightly clustered in 1..=35.
