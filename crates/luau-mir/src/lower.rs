@@ -870,4 +870,52 @@ mod tests {
         let msg = format!("{err}");
         assert!(msg.contains("continue outside loop"), "got: {msg}");
     }
+
+    #[test]
+    fn compound_assign_local_lowers_to_binop_and_move() {
+        let p = mir_of("local a = 1 a += 2");
+        let instrs: Vec<&Instr> = p.main().blocks.iter()
+            .flat_map(|b| b.instrs.iter()).collect();
+        // Should contain a BinOp Add.
+        let has_add = instrs.iter().any(|i| matches!(
+            i,
+            Instr::BinOp { op: luau_hir::BinOp::Add, .. }
+        ));
+        assert!(has_add);
+    }
+
+    #[test]
+    fn compound_assign_global_round_trips_through_globals() {
+        let p = mir_of("g -= 1");
+        let instrs: Vec<&Instr> = p.main().blocks.iter()
+            .flat_map(|b| b.instrs.iter()).collect();
+        let has_get_global = instrs.iter().any(|i| matches!(i, Instr::GetGlobal { .. }));
+        let has_set_global = instrs.iter().any(|i| matches!(i, Instr::SetGlobal { .. }));
+        assert!(has_get_global && has_set_global);
+    }
+
+    #[test]
+    fn compound_assign_index_evaluates_obj_and_key_once() {
+        // Crude check: count GetIndex/SetIndex. The compound assign should produce
+        // exactly one GetIndex (the read of t.x).
+        let p = mir_of("local t = {x = 0} t.x += 5");
+        let instrs: Vec<&Instr> = p.main().blocks.iter()
+            .flat_map(|b| b.instrs.iter()).collect();
+        let get_count = instrs.iter().filter(|i| matches!(i, Instr::GetIndex { .. })).count();
+        let set_count = instrs.iter().filter(|i| matches!(i, Instr::SetIndex { .. })).count();
+        assert_eq!(get_count, 1, "got {}", get_count);
+        // SetIndex: one from the table ctor's x=0 + one from the compound write-back.
+        assert!(set_count >= 2, "got {}", set_count);
+    }
+
+    #[test]
+    fn compound_assign_upvalue_uses_get_set_upval() {
+        let p = mir_of("local x = 1 local f = function() x += 1 end");
+        let inner = &p.functions[1];
+        let instrs: Vec<&Instr> = inner.blocks.iter()
+            .flat_map(|b| b.instrs.iter()).collect();
+        let has_get_upval = instrs.iter().any(|i| matches!(i, Instr::GetUpval { .. }));
+        let has_set_upval = instrs.iter().any(|i| matches!(i, Instr::SetUpval { .. }));
+        assert!(has_get_upval && has_set_upval);
+    }
 }

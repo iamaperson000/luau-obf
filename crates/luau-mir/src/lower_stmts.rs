@@ -265,8 +265,89 @@ fn lower_stmt(b: &mut FnBuilder, stmt: &HirStmt) -> Result<(), MirError> {
             b.switch_to(dead);
             Ok(())
         }
-        HirStmt::CompoundAssign { .. } => {
-            Err(MirError::Unsupported("compound assign (Plan 5 Task 6)".into()))
+        HirStmt::CompoundAssign { target, op, value } => {
+            match target {
+                AssignTarget::Symbol(sym) => {
+                    // Snapshot the current value BEFORE evaluating the RHS, so a
+                    // side-effecting RHS that mutates this same slot doesn't
+                    // change the value the BinOp reads. Lua semantics for `a op= b`
+                    // require reading `a` first, then evaluating `b`, then combining.
+                    let snapshot = if b.is_global(*sym) {
+                        let name_str = b.name_of(*sym);
+                        let name_const = b.intern_const(Constant::String(name_str));
+                        let dst = b.fresh_local();
+                        b.emit(Instr::GetGlobal { dst, name: name_const });
+                        dst
+                    } else {
+                        let slot = b.local_for(*sym);
+                        let dst = b.fresh_local();
+                        b.emit(Instr::Move { dst, src: slot });
+                        dst
+                    };
+                    let rhs = b.lower_expr(value)?;
+                    let new_v = b.fresh_local();
+                    b.emit(Instr::BinOp {
+                        dst: new_v,
+                        op: *op,
+                        lhs: Value::VLocal(snapshot),
+                        rhs: Value::VLocal(rhs),
+                    });
+                    if b.is_global(*sym) {
+                        let name_str = b.name_of(*sym);
+                        let name_const = b.intern_const(Constant::String(name_str));
+                        b.emit(Instr::SetGlobal {
+                            name: name_const,
+                            value: Value::VLocal(new_v),
+                        });
+                    } else {
+                        let slot = b.local_for(*sym);
+                        b.emit(Instr::Move { dst: slot, src: new_v });
+                    }
+                    Ok(())
+                }
+                AssignTarget::Upvalue(idx) => {
+                    let current = b.fresh_local();
+                    b.emit(Instr::GetUpval { dst: current, idx: *idx });
+                    let rhs = b.lower_expr(value)?;
+                    let new_v = b.fresh_local();
+                    b.emit(Instr::BinOp {
+                        dst: new_v,
+                        op: *op,
+                        lhs: Value::VLocal(current),
+                        rhs: Value::VLocal(rhs),
+                    });
+                    b.emit(Instr::SetUpval {
+                        idx: *idx,
+                        value: Value::VLocal(new_v),
+                    });
+                    Ok(())
+                }
+                AssignTarget::Index { obj, key } => {
+                    // Evaluate obj and key EXACTLY ONCE.
+                    let obj_v = b.lower_expr(obj)?;
+                    let key_v = b.lower_expr(key)?;
+                    let current = b.fresh_local();
+                    b.emit(Instr::GetIndex {
+                        dst: current,
+                        obj: Value::VLocal(obj_v),
+                        key: Value::VLocal(key_v),
+                    });
+                    let rhs = b.lower_expr(value)?;
+                    let new_v = b.fresh_local();
+                    b.emit(Instr::BinOp {
+                        dst: new_v,
+                        op: *op,
+                        lhs: Value::VLocal(current),
+                        rhs: Value::VLocal(rhs),
+                    });
+                    b.emit(Instr::SetIndex {
+                        obj: Value::VLocal(obj_v),
+                        key: Value::VLocal(key_v),
+                        value: Value::VLocal(new_v),
+                    });
+                    Ok(())
+                }
+            }
         }
         HirStmt::IndexAssign { obj, key, value } => {
             let obj_v = b.lower_expr(obj)?;
