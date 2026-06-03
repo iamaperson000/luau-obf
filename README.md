@@ -2,13 +2,12 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 9 — VM template hardening. Internal identifiers (`vm_call`,
-`OP_LoadConst`, `read_u16`, register/upvalue locals, etc.) are renamed to
-seed-derived opaque names; all comments are stripped from the rendered output;
-string-constant encryption now mixes a per-proto salt so identical plaintexts
-produce different ciphertexts across protos. A reader of the obfuscated chunk
-no longer sees a labeled VM — they see ~400 lines of two-letter locals
-operating on opaque tables and bytes. Full corpus passes under every seed.
+**Status:** Plan 10 — opcode bytes are inlined directly into the dispatcher
+(the 35-line opcode-constants block is gone) and bytecode bytes themselves are
+XOR-encoded per build against a position-mixed keystream. Static analysis of
+the obfuscated output no longer sees a labeled VM, no longer sees an opcode
+table, and `string.byte` over a `CODE[i]` entry returns pseudo-random bytes
+rather than the underlying opcode stream. Full corpus passes under every seed.
 
 ## Build
 
