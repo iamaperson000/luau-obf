@@ -822,4 +822,50 @@ mod tests {
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(stdout.contains("1001"), "expected '1001' in stdout, got: {}", stdout);
     }
+
+    #[test]
+    fn branch_flip_changes_output() {
+        let src = "
+            local function check(x)
+                if x > 0 then return 'pos' end
+                if x < 0 then return 'neg' end
+                return 'zero'
+            end
+            print(check(1), check(-1), check(0))
+        ";
+        let a = obfuscate(src, Options { seed: Some([10u8; 32]) }).unwrap();
+        let b = obfuscate(src, Options { seed: Some([20u8; 32]) }).unwrap();
+        let c = obfuscate(src, Options { seed: Some([30u8; 32]) }).unwrap();
+        assert_ne!(a.output, b.output);
+        assert_ne!(b.output, c.output);
+        assert_ne!(a.output, c.output);
+    }
+
+    #[test]
+    fn branch_flip_preserves_semantics() {
+        // A branching program with a deterministic output. Verify the
+        // obfuscated chunk produces the same lines as plain luau.
+        let src = "
+            local total = 0
+            for i = 1, 10 do
+                if i % 2 == 0 then
+                    total = total + i
+                else
+                    total = total - i
+                end
+            end
+            print(total)
+        ";
+        let r = obfuscate(src, Options { seed: Some([99u8; 32]) }).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("obf.luau");
+        std::fs::write(&path, &r.output).unwrap();
+        let out = std::process::Command::new("luau").arg(&path).output().unwrap();
+        assert!(out.status.success(),
+            "luau exited {:?}; stderr: {}",
+            out.status, String::from_utf8_lossy(&out.stderr));
+        // sum of evens 2..10 = 30; sum of odds 1..9 = 25; total = 30-25 = 5.
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("5"), "expected '5' in stdout, got: {}", stdout);
+    }
 }
