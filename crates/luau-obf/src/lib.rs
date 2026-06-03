@@ -1229,6 +1229,34 @@ mod tests {
         }
     }
 
+    // ── Plan 30 acceptance tests ──────────────────────────────────────────────
+
+    #[test]
+    fn lc_lc_fusion_round_trips() {
+        // Program with many adjacent LoadConsts — lots of opportunities for LCLC fusion.
+        let src = r#"
+            local a = 1
+            local b = 2
+            local c = 3
+            local d = 4
+            local e = 5
+            local f = 6
+            print(a + b + c + d + e + f)
+        "#;
+        for seed_byte in [1u8, 27, 89, 200] {
+            let r = obfuscate(src, Options { seed: Some([seed_byte; 32]), env_binding: None }).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("obf.luau");
+            std::fs::write(&path, &r.output).unwrap();
+            let out = std::process::Command::new("luau").arg(&path).output().unwrap();
+            assert!(out.status.success(),
+                "seed {}: luau failed: {}", seed_byte, String::from_utf8_lossy(&out.stderr));
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(stdout.contains("21"),
+                "seed {}: got {:?}", seed_byte, stdout);
+        }
+    }
+
     // ── Plan 29 acceptance tests ──────────────────────────────────────────────
 
     #[test]
