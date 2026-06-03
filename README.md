@@ -2,7 +2,21 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 30 — Handler-fusion superoperators. The VM dispatcher now
+**Status:** Plan 31 — Dispatcher split via closure groups. The single monolithic
+`if/elseif` dispatch ladder (36 opcodes, one function) is now split into three
+independent closure-shaped handler groups: Group A (arithmetic + comparison,
+13 ops), Group B (load/move/global/table/upval/vararg/superop, 14 ops), and
+Group C (control flow/calls/closures, 9 ops). The main `vm_call` loop tries
+groups in fixed order A→B→C, propagating a `"miss"` sentinel when an opcode
+does not belong to the current group. Group C uses additional status strings
+(`"return"`, `"return_multi"`) to signal early exit from the dispatch loop
+without relying on Lua's multi-return from inner functions. The group functions
+are forward-declared at module scope and close over `vm_call` via the standard
+Luau forward-declaration pattern, so Group C's `Closure` handler can
+recursively invoke the VM. An adversary must now locate and read three separate
+closures rather than one function to map the full opcode set.
+
+Previously: Plan 30 — Handler-fusion superoperators. The VM dispatcher now
 includes a `LoadConstLoadConst` (LCLC) superopcode that performs two
 consecutive LoadConst operations in a single 9-byte instruction (vs 10 bytes
 for two separate LoadConst instructions). Fusion is stochastic: during
