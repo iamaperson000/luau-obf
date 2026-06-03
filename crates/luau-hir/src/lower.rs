@@ -674,15 +674,22 @@ fn lower_function_body_with_self(
     if is_method {
         params.push(lowerer.declare_local("self"));
     }
-    for p in body.parameters() {
+    let mut is_vararg = false;
+    let params_list: Vec<&full_moon::ast::Parameter> = body.parameters().iter().collect();
+    for (i, p) in params_list.iter().enumerate() {
         use full_moon::ast::Parameter;
         match p {
             Parameter::Name(tok) => {
                 params.push(lowerer.declare_local(&tok.token().to_string()));
             }
             Parameter::Ellipsis(_) => {
-                lowerer.exit_function();
-                return Err(HirError::Unsupported("varargs `...` (Plan 4)".into()));
+                if i != params_list.len() - 1 {
+                    lowerer.exit_function();
+                    return Err(HirError::Unsupported(
+                        "`...` must be the last parameter".into(),
+                    ));
+                }
+                is_vararg = true;
             }
             other => {
                 lowerer.exit_function();
@@ -692,7 +699,12 @@ fn lower_function_body_with_self(
     }
     let body = lower_block(lowerer, body.block())?;
     let frame = lowerer.exit_function();
-    Ok(HirFunction { params, body, upvalues: frame.upvalues, is_vararg: false })
+    Ok(HirFunction {
+        params,
+        body,
+        upvalues: frame.upvalues,
+        is_vararg,
+    })
 }
 
 #[cfg(test)]
@@ -1103,5 +1115,42 @@ mod tests {
             if let HirStmt::LocalDecl { value: HirExpr::Function(f), .. } = s { Some(f) } else { None }
         }).expect("f");
         assert_eq!(f.upvalues.len(), 1);
+    }
+
+    #[test]
+    fn lowers_vararg_parameter() {
+        let p = lower_str("local f = function(...) end");
+        let HirStmt::LocalDecl { value, .. } = &p.main[0] else { panic!() };
+        let HirExpr::Function(f) = value else { panic!() };
+        assert!(f.is_vararg);
+        assert!(f.params.is_empty());
+    }
+
+    #[test]
+    fn lowers_mixed_params_and_vararg() {
+        let p = lower_str("local f = function(a, b, ...) end");
+        let HirStmt::LocalDecl { value, .. } = &p.main[0] else { panic!() };
+        let HirExpr::Function(f) = value else { panic!() };
+        assert!(f.is_vararg);
+        assert_eq!(f.params.len(), 2);
+    }
+
+    #[test]
+    fn rejects_vararg_in_middle_of_params() {
+        // full_moon itself rejects `...` followed by more params at parse time,
+        // so the lowerer's defensive guard is dead code in practice. We still
+        // assert the contract: this input must NOT yield a successful lowering.
+        let parse_result = luau_parse::parse("local f = function(a, ..., b) end");
+        match parse_result {
+            Err(_) => {
+                // Parser caught it — good, contract upheld.
+            }
+            Ok(ast) => {
+                // If a future full_moon allows this, our lowerer must reject it.
+                let err = lower(&ast).unwrap_err();
+                let msg = format!("{err}");
+                assert!(msg.contains("`...` must be the last"), "got: {msg}");
+            }
+        }
     }
 }
