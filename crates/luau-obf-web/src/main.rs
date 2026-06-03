@@ -44,7 +44,7 @@ async fn handle_obfuscate(Json(req): Json<ObfuscateRequest>) -> impl IntoRespons
         }
     };
 
-    let opts = Options { seed };
+    let opts = Options { seed, env_binding: None };
     match obfuscate(&req.source, opts) {
         Ok(result) => (
             StatusCode::OK,
