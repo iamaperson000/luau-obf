@@ -47,10 +47,6 @@ local function _const(consts, idx, proto_id)
     return c
 end
 
--- Opcode constants
-{% for opname, num in opcodes %}local OP_{{ opname }} = {{ num }}
-{% endfor %}
-
 -- Constant pools per proto.
 local CONSTS = {
 {% for proto_consts in consts %}    { {{ proto_consts }} },
@@ -108,94 +104,94 @@ vm_call = function(proto_id, args, nargs, upvals)
     while pc <= code_len do
         local op = _sbyte(code, pc)
         pc = pc + 1
-        if op == OP_LoadNil then
+        if op == {{ ops.LoadNil }} then
             local a = read_u16(code, pc); pc = pc + 2
             regs[a] = nil
-        elseif op == OP_LoadTrue then
+        elseif op == {{ ops.LoadTrue }} then
             local a = read_u16(code, pc); pc = pc + 2
             regs[a] = true
-        elseif op == OP_LoadFalse then
+        elseif op == {{ ops.LoadFalse }} then
             local a = read_u16(code, pc); pc = pc + 2
             regs[a] = false
-        elseif op == OP_LoadConst then
+        elseif op == {{ ops.LoadConst }} then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
             regs[a] = _const(consts, b + 1, proto_id)
-        elseif op == OP_Move then
+        elseif op == {{ ops.Move }} then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
             regs[a] = regs[b]
-        elseif op == OP_Add then
+        elseif op == {{ ops.Add }} then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
             local c = read_u16(code, pc); pc = pc + 2
             regs[a] = regs[b] + regs[c]
-        elseif op == OP_Sub then
+        elseif op == {{ ops.Sub }} then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
             local c = read_u16(code, pc); pc = pc + 2
             regs[a] = regs[b] - regs[c]
-        elseif op == OP_Mul then
+        elseif op == {{ ops.Mul }} then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
             local c = read_u16(code, pc); pc = pc + 2
             regs[a] = regs[b] * regs[c]
-        elseif op == OP_Div then
+        elseif op == {{ ops.Div }} then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
             local c = read_u16(code, pc); pc = pc + 2
             regs[a] = regs[b] / regs[c]
-        elseif op == OP_Mod then
+        elseif op == {{ ops.Mod }} then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
             local c = read_u16(code, pc); pc = pc + 2
             regs[a] = regs[b] % regs[c]
-        elseif op == OP_Pow then
+        elseif op == {{ ops.Pow }} then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
             local c = read_u16(code, pc); pc = pc + 2
             regs[a] = regs[b] ^ regs[c]
-        elseif op == OP_Concat then
+        elseif op == {{ ops.Concat }} then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
             local c = read_u16(code, pc); pc = pc + 2
             regs[a] = _tostring(regs[b]) .. _tostring(regs[c])
-        elseif op == OP_Lt then
+        elseif op == {{ ops.Lt }} then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
             local c = read_u16(code, pc); pc = pc + 2
             regs[a] = regs[b] < regs[c]
-        elseif op == OP_Le then
+        elseif op == {{ ops.Le }} then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
             local c = read_u16(code, pc); pc = pc + 2
             regs[a] = regs[b] <= regs[c]
-        elseif op == OP_Eq then
+        elseif op == {{ ops.Eq }} then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
             local c = read_u16(code, pc); pc = pc + 2
             regs[a] = regs[b] == regs[c]
-        elseif op == OP_Not then
+        elseif op == {{ ops.Not }} then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
             regs[a] = not regs[b]
-        elseif op == OP_Neg then
+        elseif op == {{ ops.Neg }} then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
             regs[a] = -regs[b]
-        elseif op == OP_Len then
+        elseif op == {{ ops.Len }} then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
             regs[a] = #regs[b]
-        elseif op == OP_GetGlobal then
+        elseif op == {{ ops.GetGlobal }} then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
             regs[a] = _ENV_[_const(consts, b + 1, proto_id)]
-        elseif op == OP_SetGlobal then
+        elseif op == {{ ops.SetGlobal }} then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
             _ENV_[_const(consts, a + 1, proto_id)] = regs[b]
-        elseif op == OP_Call then
+        elseif op == {{ ops.Call }} then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
             local n = read_i16(code, pc); pc = pc + 2
@@ -208,29 +204,29 @@ vm_call = function(proto_id, args, nargs, upvals)
             if a ~= 0xFFFF then
                 regs[a] = result
             end
-        elseif op == OP_Return then
+        elseif op == {{ ops.Return }} then
             local a = read_u16(code, pc); pc = pc + 2
             if a == 0xFFFF then
                 return nil
             else
                 return regs[a]
             end
-        elseif op == OP_Jmp then
+        elseif op == {{ ops.Jmp }} then
             local delta = read_i16(code, pc); pc = pc + 2
             pc = pc + delta
-        elseif op == OP_JmpIfTrue then
+        elseif op == {{ ops.JmpIfTrue }} then
             local a = read_u16(code, pc); pc = pc + 2
             local delta = read_i16(code, pc); pc = pc + 2
             if regs[a] then
                 pc = pc + delta
             end
-        elseif op == OP_JmpIfFalse then
+        elseif op == {{ ops.JmpIfFalse }} then
             local a = read_u16(code, pc); pc = pc + 2
             local delta = read_i16(code, pc); pc = pc + 2
             if not regs[a] then
                 pc = pc + delta
             end
-        elseif op == OP_Closure then
+        elseif op == {{ ops.Closure }} then
             local a = read_u16(code, pc); pc = pc + 2
             local pid = read_u16(code, pc); pc = pc + 2
             -- Skip the closure_idx operand (Rust-side encoding bookkeeping only).
@@ -254,30 +250,30 @@ vm_call = function(proto_id, args, nargs, upvals)
                 local n = _select("#", ...)
                 return vm_call(pid, pa, n, captured)
             end
-        elseif op == OP_NewTable then
+        elseif op == {{ ops.NewTable }} then
             local a = read_u16(code, pc); pc = pc + 2
             regs[a] = {}
-        elseif op == OP_GetTable then
+        elseif op == {{ ops.GetTable }} then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
             local c = read_u16(code, pc); pc = pc + 2
             regs[a] = regs[b][regs[c]]
-        elseif op == OP_SetTable then
+        elseif op == {{ ops.SetTable }} then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
             local c = read_u16(code, pc); pc = pc + 2
             regs[a][regs[b]] = regs[c]
-        elseif op == OP_GetUpval then
+        elseif op == {{ ops.GetUpval }} then
             local a = read_u16(code, pc); pc = pc + 2
             local idx = read_u16(code, pc); pc = pc + 2
             local cell = upvals[idx + 1]
             regs[a] = cell._t[cell._k]
-        elseif op == OP_SetUpval then
+        elseif op == {{ ops.SetUpval }} then
             local idx = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
             local cell = upvals[idx + 1]
             cell._t[cell._k] = regs[b]
-        elseif op == OP_CallVar then
+        elseif op == {{ ops.CallVar }} then
             local a = read_u16(code, pc); pc = pc + 2
             local b = read_u16(code, pc); pc = pc + 2
             local n = read_i16(code, pc); pc = pc + 2
@@ -308,7 +304,7 @@ vm_call = function(proto_id, args, nargs, upvals)
                 local results = _tpack(fn(_tunpack(call_args, 1, total_n)))
                 regs[a] = results
             end
-        elseif op == OP_BuildResults then
+        elseif op == {{ ops.BuildResults }} then
             local a = read_u16(code, pc); pc = pc + 2
             local sp = read_u16(code, pc); pc = pc + 2
             pc = pc + 2  -- skip the br_idx operand (Rust-side encoding bookkeeping)
@@ -330,10 +326,10 @@ vm_call = function(proto_id, args, nargs, upvals)
             end
             tbl.n = count
             regs[a] = tbl
-        elseif op == OP_Vararg then
+        elseif op == {{ ops.Vararg }} then
             local a = read_u16(code, pc); pc = pc + 2
             regs[a] = frame_varargs
-        elseif op == OP_ReturnMulti then
+        elseif op == {{ ops.ReturnMulti }} then
             local a = read_u16(code, pc); pc = pc + 2
             local tbl = regs[a]
             return _tunpack(tbl, 1, tbl.n)

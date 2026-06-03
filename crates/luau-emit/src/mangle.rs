@@ -145,15 +145,6 @@ pub const MANGLE_TARGETS: &[&str] = &[
     "n_values", "count",
     // Bootstrap.
     "main_args", "main_n",
-    // Opcode constants.
-    "OP_LoadNil", "OP_LoadTrue", "OP_LoadFalse", "OP_LoadConst", "OP_Move",
-    "OP_Add", "OP_Sub", "OP_Mul", "OP_Div", "OP_Mod", "OP_Pow",
-    "OP_Concat", "OP_Lt", "OP_Le", "OP_Eq", "OP_Not", "OP_Neg", "OP_Len",
-    "OP_GetGlobal", "OP_SetGlobal", "OP_Call", "OP_Return",
-    "OP_Jmp", "OP_JmpIfTrue", "OP_JmpIfFalse",
-    "OP_Closure", "OP_NewTable", "OP_GetTable", "OP_SetTable",
-    "OP_GetUpval", "OP_SetUpval",
-    "OP_CallVar", "OP_BuildResults", "OP_Vararg", "OP_ReturnMulti",
     // Misc inner-loop names.
     "sources", "src", "u", "idx", "out", "i", "j", "len", "cell",
     "t", "pos", "new", "value",

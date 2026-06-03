@@ -20,6 +20,11 @@ pub fn render(
         .map(|k| (opname(*k).to_string(), opmap.opcode_of(*k)))
         .collect();
 
+    let ops: std::collections::HashMap<String, u8> = ALL_OPS
+        .iter()
+        .map(|k| (opname(*k).to_string(), opmap.opcode_of(*k)))
+        .collect();
+
     let (key_a, key_b) = derive_string_keys(rng);
 
     let consts: Vec<String> = program
@@ -58,6 +63,7 @@ pub fn render(
     let tmpl = env.get_template("vm").unwrap();
     let output = tmpl.render(minijinja::context! {
         opcodes => opcodes,
+        ops => ops,
         consts => consts,
         codes => codes,
         meta => meta,
