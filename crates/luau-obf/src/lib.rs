@@ -76,4 +76,23 @@ mod tests {
         let b = obfuscate("local x = 1 print(x)", Options { seed: Some([7u8; 32]) }).unwrap();
         assert_eq!(a.output, b.output);
     }
+
+    #[test]
+    fn different_seeds_produce_different_outputs() {
+        let src = "local x = 1 + 2 print(x)";
+        let a = obfuscate(src, Options { seed: Some([1u8; 32]) }).unwrap();
+        let b = obfuscate(src, Options { seed: Some([2u8; 32]) }).unwrap();
+        assert_ne!(a.output, b.output);
+    }
+
+    #[test]
+    fn three_seeds_produce_three_distinct_outputs() {
+        let src = "local function add(a, b) return a + b end print(add(3, 4))";
+        let a = obfuscate(src, Options { seed: Some([10u8; 32]) }).unwrap();
+        let b = obfuscate(src, Options { seed: Some([20u8; 32]) }).unwrap();
+        let c = obfuscate(src, Options { seed: Some([30u8; 32]) }).unwrap();
+        assert_ne!(a.output, b.output);
+        assert_ne!(b.output, c.output);
+        assert_ne!(a.output, c.output);
+    }
 }

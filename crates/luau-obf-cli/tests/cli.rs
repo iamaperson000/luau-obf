@@ -59,3 +59,26 @@ fn cli_accepts_explicit_seed() {
     let b = fs::read_to_string(&out_b).unwrap();
     assert_eq!(a, b, "same seed must produce identical output");
 }
+
+#[test]
+fn cli_different_seeds_produce_different_outputs() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.luau");
+    let out_a = dir.path().join("a.luau");
+    let out_b = dir.path().join("b.luau");
+    fs::write(&input, "print(1) print(2) print(3)").unwrap();
+
+    let seed_a = "1111111111111111111111111111111111111111111111111111111111111111";
+    let seed_b = "2222222222222222222222222222222222222222222222222222222222222222";
+
+    Command::cargo_bin("luau-obf").unwrap()
+        .arg(&input).arg("-o").arg(&out_a).arg("--seed").arg(seed_a).arg("--quiet")
+        .assert().success();
+    Command::cargo_bin("luau-obf").unwrap()
+        .arg(&input).arg("-o").arg(&out_b).arg("--seed").arg(seed_b).arg("--quiet")
+        .assert().success();
+
+    let a = fs::read_to_string(&out_a).unwrap();
+    let b = fs::read_to_string(&out_b).unwrap();
+    assert_ne!(a, b, "different seeds must produce different output");
+}
