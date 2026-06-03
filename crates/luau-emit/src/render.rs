@@ -9,6 +9,70 @@ use luau_mir::Constant;
 use minijinja::Environment;
 use rand_chacha::ChaCha20Rng;
 
+/// Plan 12: every encrypted constant is a uniform fixed-size blob. The type
+/// tag, the original length, and the payload all live INSIDE the encrypted
+/// blob. BLOB_SIZE is set to 64 because the corpus contains at least one
+/// string longer than 29 bytes (`string_interp.luau` has a 34-byte string).
+pub(crate) const BLOB_SIZE: usize = 64;
+pub(crate) const MAX_STRING_LEN: usize = BLOB_SIZE - 3;
+
+fn random_padding(rng: &mut ChaCha20Rng, len: usize) -> Vec<u8> {
+    use rand::RngCore;
+    let mut out = vec![0u8; len];
+    rng.fill_bytes(&mut out);
+    out
+}
+
+fn build_constant_blob(
+    c: &Constant,
+    rng: &mut ChaCha20Rng,
+) -> Result<Vec<u8>, EmitError> {
+    let mut blob = vec![0u8; BLOB_SIZE];
+    blob[0] = match c {
+        Constant::String(_) => 0,
+        Constant::Number(_) => 1,
+        Constant::Bool(_) => 2,
+        Constant::Nil => 3,
+    };
+    match c {
+        Constant::String(s) => {
+            let bytes = s.as_bytes();
+            if bytes.len() > MAX_STRING_LEN {
+                return Err(EmitError::Template(format!(
+                    "string constant exceeds {}-byte max: {:?}",
+                    MAX_STRING_LEN, s
+                )));
+            }
+            blob[1] = (bytes.len() & 0xFF) as u8;
+            blob[2] = ((bytes.len() >> 8) & 0xFF) as u8;
+            blob[3..3 + bytes.len()].copy_from_slice(bytes);
+            let pad = random_padding(rng, BLOB_SIZE - 3 - bytes.len());
+            blob[3 + bytes.len()..].copy_from_slice(&pad);
+        }
+        Constant::Number(n) => {
+            blob[1] = 8;
+            blob[2] = 0;
+            blob[3..11].copy_from_slice(&n.to_le_bytes());
+            let pad = random_padding(rng, BLOB_SIZE - 11);
+            blob[11..].copy_from_slice(&pad);
+        }
+        Constant::Bool(b) => {
+            blob[1] = 1;
+            blob[2] = 0;
+            blob[3] = if *b { 1 } else { 0 };
+            let pad = random_padding(rng, BLOB_SIZE - 4);
+            blob[4..].copy_from_slice(&pad);
+        }
+        Constant::Nil => {
+            blob[1] = 0;
+            blob[2] = 0;
+            let pad = random_padding(rng, BLOB_SIZE - 3);
+            blob[3..].copy_from_slice(&pad);
+        }
+    }
+    Ok(blob)
+}
+
 pub fn render(
     program: &LirProgram,
     opmap: &OpMap,
@@ -26,12 +90,10 @@ pub fn render(
 
     let (key_a, key_b) = derive_string_keys(rng);
 
-    let consts: Vec<String> = program
-        .functions
-        .iter()
-        .enumerate()
-        .map(|(i, f)| format_const_pool(&f.consts, &key_a, &key_b, i as u64))
-        .collect();
+    let mut consts: Vec<String> = Vec::with_capacity(program.functions.len());
+    for (i, f) in program.functions.iter().enumerate() {
+        consts.push(format_const_pool(&f.consts, &key_a, &key_b, i as u64, rng)?);
+    }
 
     use rand::RngCore;
     let mut k_buf = [0u8; 8];
@@ -109,26 +171,29 @@ fn format_const_pool(
     key_a: &[u8; 32],
     key_b: &[u8; 32],
     proto_salt: u64,
-) -> String {
-    let parts: Vec<String> = consts
-        .iter()
-        .map(|c| format_const(c, key_a, key_b, proto_salt))
-        .collect();
-    parts.join(", ")
+    rng: &mut ChaCha20Rng,
+) -> Result<String, EmitError> {
+    let mut parts = Vec::with_capacity(consts.len());
+    for c in consts {
+        parts.push(format_const(c, key_a, key_b, proto_salt, rng)?);
+    }
+    Ok(parts.join(", "))
 }
 
-fn format_const(c: &Constant, key_a: &[u8; 32], key_b: &[u8; 32], proto_salt: u64) -> String {
-    // Plan 11: every constant of every type is uniformly wrapped as
-    // `_cw(tag, encrypted_bytes)`. Tags: 0=string, 1=number, 2=bool, 3=nil.
-    let (tag, plaintext): (u8, Vec<u8>) = match c {
-        Constant::Nil => (3, Vec::new()),
-        Constant::Bool(true) => (2, vec![1]),
-        Constant::Bool(false) => (2, vec![0]),
-        Constant::Number(n) => (1, n.to_le_bytes().to_vec()),
-        Constant::String(s) => (0, s.as_bytes().to_vec()),
-    };
-    let enc = encrypt_bytes(&plaintext, key_a, key_b, proto_salt);
-    format!("_cw({}, \"{}\")", tag, encode_luau_string_literal(&enc))
+fn format_const(
+    c: &Constant,
+    key_a: &[u8; 32],
+    key_b: &[u8; 32],
+    proto_salt: u64,
+    rng: &mut ChaCha20Rng,
+) -> Result<String, EmitError> {
+    // Plan 12: every constant is built into a uniform BLOB_SIZE-byte blob
+    // containing the tag, length, payload, and random padding. The blob is
+    // then XOR-encrypted. The wrapper call site is `_cw("<bytes>")` — a
+    // single argument, identical-looking regardless of constant type.
+    let blob = build_constant_blob(c, rng)?;
+    let enc = encrypt_bytes(&blob, key_a, key_b, proto_salt);
+    Ok(format!("_cw(\"{}\")", encode_luau_string_literal(&enc)))
 }
 
 pub(crate) fn derive_string_keys(rng: &mut ChaCha20Rng) -> ([u8; 32], [u8; 32]) {
@@ -231,16 +296,74 @@ mod tests {
     }
 
     #[test]
-    fn format_const_emits_cw_for_all_types() {
+    fn format_const_emits_one_arg_cw_for_all_types() {
+        use rand::SeedableRng;
         let ka = [0u8; 32];
         let kb = [0u8; 32];
-        let s_out = format_const(&Constant::String("hi".into()), &ka, &kb, 0);
-        assert!(s_out.starts_with("_cw(0,"), "string: {s_out}");
-        let n_out = format_const(&Constant::Number(3.14), &ka, &kb, 0);
-        assert!(n_out.starts_with("_cw(1,"), "number: {n_out}");
-        let b_out = format_const(&Constant::Bool(true), &ka, &kb, 0);
-        assert!(b_out.starts_with("_cw(2,"), "bool: {b_out}");
-        let nil_out = format_const(&Constant::Nil, &ka, &kb, 0);
-        assert!(nil_out.starts_with("_cw(3,"), "nil: {nil_out}");
+        let mut rng = ChaCha20Rng::from_seed([0u8; 32]);
+        for c in &[
+            Constant::String("hi".into()),
+            Constant::Number(3.14),
+            Constant::Bool(true),
+            Constant::Nil,
+        ] {
+            let out = format_const(c, &ka, &kb, 0, &mut rng).unwrap();
+            assert!(out.starts_with("_cw(\""), "expected single-arg form: {out}");
+            assert!(out.ends_with("\")"), "expected single-arg form: {out}");
+        }
+    }
+
+    #[test]
+    fn build_blob_encodes_string_length() {
+        use rand::SeedableRng;
+        let mut rng = ChaCha20Rng::from_seed([1u8; 32]);
+        let blob = build_constant_blob(&Constant::String("hello".into()), &mut rng).unwrap();
+        assert_eq!(blob.len(), BLOB_SIZE);
+        assert_eq!(blob[0], 0); // tag = string
+        assert_eq!(blob[1] as usize + blob[2] as usize * 256, 5); // length
+        assert_eq!(&blob[3..8], b"hello");
+    }
+
+    #[test]
+    fn build_blob_encodes_number() {
+        use rand::SeedableRng;
+        let mut rng = ChaCha20Rng::from_seed([1u8; 32]);
+        let blob = build_constant_blob(&Constant::Number(2.5), &mut rng).unwrap();
+        assert_eq!(blob.len(), BLOB_SIZE);
+        assert_eq!(blob[0], 1);
+        let mut buf = [0u8; 8];
+        buf.copy_from_slice(&blob[3..11]);
+        assert_eq!(f64::from_le_bytes(buf), 2.5);
+    }
+
+    #[test]
+    fn build_blob_encodes_bool() {
+        use rand::SeedableRng;
+        let mut rng = ChaCha20Rng::from_seed([2u8; 32]);
+        let blob_true = build_constant_blob(&Constant::Bool(true), &mut rng).unwrap();
+        assert_eq!(blob_true.len(), BLOB_SIZE);
+        assert_eq!(blob_true[0], 2);
+        assert_eq!(blob_true[3], 1);
+        let blob_false = build_constant_blob(&Constant::Bool(false), &mut rng).unwrap();
+        assert_eq!(blob_false[0], 2);
+        assert_eq!(blob_false[3], 0);
+    }
+
+    #[test]
+    fn build_blob_encodes_nil() {
+        use rand::SeedableRng;
+        let mut rng = ChaCha20Rng::from_seed([3u8; 32]);
+        let blob = build_constant_blob(&Constant::Nil, &mut rng).unwrap();
+        assert_eq!(blob.len(), BLOB_SIZE);
+        assert_eq!(blob[0], 3);
+    }
+
+    #[test]
+    fn rejects_string_too_long() {
+        use rand::SeedableRng;
+        let mut rng = ChaCha20Rng::from_seed([1u8; 32]);
+        let huge: String = "a".repeat(MAX_STRING_LEN + 1);
+        let r = build_constant_blob(&Constant::String(huge), &mut rng);
+        assert!(r.is_err());
     }
 }

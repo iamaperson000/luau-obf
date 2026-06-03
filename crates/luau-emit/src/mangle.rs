@@ -144,8 +144,8 @@ pub const MANGLE_TARGETS: &[&str] = &[
     "kind", "payload", "captured", "pa", "n", "fn", "call_args",
     "total_n", "sp", "m", "sp_tbl", "mode", "r", "results", "tbl",
     "n_values", "count",
-    // _const helper locals (Plan 11).
-    "raw", "tag",
+    // _const helper locals (Plan 11/12).
+    "raw", "tag", "len_lo", "len_hi",
     // Bootstrap.
     "main_args", "main_n",
     // Misc inner-loop names.
