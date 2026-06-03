@@ -2,14 +2,14 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 18 — first CFG-level obfuscation pass. Each conditional
-`Branch` terminator in the MIR is flipped with 30% probability: a `Not(cond)`
-is appended to the predecessor block and the then/else successors are
-swapped. Combined with Plans 15-17's arithmetic mangling, the obfuscated
-bytecode now diverges from source structure at both the expression and
-control-flow levels — a static analyzer must simulate every `Not` opcode
-just to recover the source-level `if`/`else` polarity. Next plans add
-opaque predicates and junk blocks, then full control-flow flattening.
+**Status:** Plan 19 — constant decomposition. Each finite numeric `LoadConst`
+in small-magnitude range is rewritten with 30% probability as
+`LoadConst(n + δ); LoadConst(δ); Sub`, with δ a seed-derived integer in
+[1, 65535]. The original literal is gone from the encrypted constant pool;
+two seed-derived blobs replace it. Composes with Plans 15-17: the inserted
+Sub becomes a candidate for `Sub → Neg + Add` rewriting, then for Add
+operand-padding. One source-level constant can compile to a multi-instruction
+synthetic chain per build.
 
 ## Build
 
