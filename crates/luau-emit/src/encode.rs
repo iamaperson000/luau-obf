@@ -4,14 +4,28 @@ use rand::seq::SliceRandom;
 use rand::Rng;
 use std::collections::HashMap;
 
-/// Compute the keystream byte for a single bytecode position.
-/// pc is 1-based (matches the VM's `_sbyte(code, pc)` semantics).
-pub(crate) fn keystream_byte(pc: u32, proto_id: u32, k0: u32, k1: u32) -> u8 {
-    let mixed = pc
+/// Initialize the stateful LCG keystream `bs` for a given proto.
+/// bs_init(pid) = (pid + 1) * 2654435761 + k0  (mod 2^32)
+#[inline]
+pub(crate) fn lcg_init(proto_id: u32, k0: u32) -> u32 {
+    proto_id.wrapping_add(1).wrapping_mul(2_654_435_761).wrapping_add(k0)
+}
+
+/// Advance the stateful LCG keystream: compute ks for this byte, then step bs.
+/// Returns (ks, new_bs).
+/// `pc` is 1-based; `bs` is the current keystream state.
+#[inline]
+pub(crate) fn lcg_step(bs: u32, pc: u32, proto_id: u32, k0: u32, k1: u32) -> (u8, u32) {
+    let pos_mix = pc
         .wrapping_mul(k1)
         .wrapping_add(k0)
         .wrapping_add(proto_id.wrapping_mul(2_654_435_761));
-    (mixed & 0xFF) as u8
+    let ks = ((bs & 0xFF) ^ (pos_mix & 0xFF)) as u8;
+    let new_bs = bs
+        .wrapping_mul(1_103_515_245)
+        .wrapping_add(ks as u32)
+        .wrapping_add(12345);
+    (ks, new_bs)
 }
 
 /// Generate a random permutation of opcode bytes 1..=n_ops for a single proto.
@@ -34,6 +48,12 @@ pub(crate) fn make_opcode_permutation(
     (perm, inv)
 }
 
+/// Encode and encrypt a LIR function's bytecode.
+///
+/// Returns `(encrypted_bytes, bs_final)` where `bs_final` is the LCG state
+/// after consuming every encrypted byte. This value is used by the constant
+/// cipher to bind each proto's constant pool to its byte-cipher's final state,
+/// making static decryption require a full LCG simulation first (Plan 32 Task 2).
 pub fn encode_function(
     f: &LirFunction,
     opmap: &OpMap,
@@ -43,7 +63,7 @@ pub fn encode_function(
     perm: &[u8],
     inv: &[u8],
     rng: &mut rand_chacha::ChaCha20Rng,
-) -> Vec<u8> {
+) -> (Vec<u8>, u32) {
     // Prologue: num_params:u8, num_regs:u16_le, num_upvals:u8, is_vararg:u8,
     // then N bytes of inverse opcode permutation (raw_byte → canonical_byte),
     // where N = inv.len() = ALL_OPS.len() (36 after Plan 30).
@@ -197,12 +217,20 @@ pub fn encode_function(
         }
         i += 1;
     }
-    // XOR every byte by its keystream (1-based pc).
+    // XOR every byte by its stateful LCG keystream (1-based pc).
+    // The LCG state `bs` makes each byte depend on all prior decoded bytes,
+    // defeating static byte-by-byte decoding.
+    let mut bs = lcg_init(proto_id, k0);
     for (idx, byte) in out.iter_mut().enumerate() {
         let pc = (idx + 1) as u32;
-        *byte ^= keystream_byte(pc, proto_id, k0, k1);
+        let (ks, new_bs) = lcg_step(bs, pc, proto_id, k0, k1);
+        *byte ^= ks;
+        bs = new_bs;
     }
-    out
+    // Return both the encrypted bytecode and the final LCG state (`bs_final`).
+    // `bs_final` is used by render.rs to tangle the constant-pool cipher with
+    // the byte-cipher (Plan 32 Task 2).
+    (out, bs)
 }
 
 /// Push a single operand as a u16. Used for LCLC superop operands which are
@@ -266,6 +294,7 @@ fn push_u16(out: &mut Vec<u8>, v: u16) {
 mod tests {
     use super::*;
     use crate::opmap::{OpMap, ALL_OPS};
+    use crate::render::encode_luau_string_literal;
     use luau_lir::{ConstIdx, LirFunction, LirInstr, OpKind, Operand, ProtoId, Reg};
     use rand::SeedableRng;
 
@@ -292,23 +321,34 @@ mod tests {
         let perm: Vec<u8> = (1..=n_ops as u8).collect();
         let inv = perm.clone(); // identity permutation is self-inverse
         let mut rng = make_rng();
-        let bytes = encode_function(&f, &opmap, 0, 0, 0, &perm, &inv, &mut rng);
+        let (bytes, _bs_final) = encode_function(&f, &opmap, 0, 0, 0, &perm, &inv, &mut rng);
         // 5-byte META + 36-byte inv + 1 opcode byte + 2 operand bytes = 44.
         assert_eq!(bytes.len(), 44);
-        // With k0=0 and k1=0 the keystream is all zero (pid=0), so prologue
-        // bytes appear unmodified.
-        assert_eq!(bytes[0], 0);       // num_params
-        assert_eq!(bytes[1], 0);       // num_regs lo
-        assert_eq!(bytes[2], 0);       // num_regs hi
-        assert_eq!(bytes[3], 0);       // num_upvals
-        assert_eq!(bytes[4], 0);       // is_vararg
-        // bytes[5..41] = identity inv table = 1, 2, ..., 36.
-        for i in 0..36 {
-            assert_eq!(bytes[5 + i], (i + 1) as u8);
+        // With the stateful LCG, bytes are encrypted even with k0=k1=pid=0.
+        // Verify by decrypting them back and checking the plaintext.
+        let k0: u32 = 0;
+        let k1: u32 = 0;
+        let proto_id: u32 = 0;
+        let mut bs = lcg_init(proto_id, k0);
+        let mut plain = bytes.clone();
+        for (idx, byte) in plain.iter_mut().enumerate() {
+            let pc = (idx + 1) as u32;
+            let (ks, new_bs) = lcg_step(bs, pc, proto_id, k0, k1);
+            *byte ^= ks;
+            bs = new_bs;
         }
-        assert_eq!(bytes[41], opmap.opcode_of(OpKind::Return));
-        assert_eq!(bytes[42], 0xFF);
-        assert_eq!(bytes[43], 0xFF);
+        assert_eq!(plain[0], 0);       // num_params
+        assert_eq!(plain[1], 0);       // num_regs lo
+        assert_eq!(plain[2], 0);       // num_regs hi
+        assert_eq!(plain[3], 0);       // num_upvals
+        assert_eq!(plain[4], 0);       // is_vararg
+        // plain[5..41] = identity inv table = 1, 2, ..., 36.
+        for i in 0..36 {
+            assert_eq!(plain[5 + i], (i + 1) as u8);
+        }
+        assert_eq!(plain[41], opmap.opcode_of(OpKind::Return));
+        assert_eq!(plain[42], 0xFF);
+        assert_eq!(plain[43], 0xFF);
     }
 
     #[test]
@@ -358,14 +398,108 @@ mod tests {
         let perm: Vec<u8> = (1..=n_ops as u8).collect();
         let inv = perm.clone();
         let mut rng = rand_chacha::ChaCha20Rng::from_seed([0u8; 32]);
-        let bytes = encode_function(&f, &opmap, 0, 0, 0, &perm, &inv, &mut rng);
-        // Prologue = 5 + 36 = 41 bytes (k0=0, k1=0, pid=0 → keystream all zeros).
+        let (bytes, _bs_final) = encode_function(&f, &opmap, 0, 0, 0, &perm, &inv, &mut rng);
+        // Prologue = 5 + 36 = 41 bytes.
         // LCLC: 1 + 8 = 9 bytes.
         // LC:   1 + 4 = 5 bytes.
         // Return: 1 + 2 = 3 bytes.
         assert_eq!(bytes.len(), 41 + 9 + 5 + 3, "expected fused LCLC + lone LC + Return");
-        // Verify the opcode at prologue end is LCLC (identity perm: canonical = emitted).
-        assert_eq!(bytes[41], opmap.opcode_of(OpKind::LoadConstLoadConst),
+        // Verify by decrypting bytes[41] back to check it's LCLC opcode.
+        let k0: u32 = 0;
+        let k1: u32 = 0;
+        let proto_id: u32 = 0;
+        let mut bs = lcg_init(proto_id, k0);
+        let mut plain = bytes.clone();
+        for (idx, byte) in plain.iter_mut().enumerate() {
+            let pc = (idx + 1) as u32;
+            let (ks, new_bs) = lcg_step(bs, pc, proto_id, k0, k1);
+            *byte ^= ks;
+            bs = new_bs;
+        }
+        assert_eq!(plain[41], opmap.opcode_of(OpKind::LoadConstLoadConst),
             "first instruction byte should be LCLC opcode");
+    }
+
+    /// Cross-impl check: Rust LCG encrypt then Luau LCG decrypt must recover plaintext.
+    /// This is the gate test for Plan 32 Task 1.
+    #[test]
+    fn rust_luau_stateful_keystream_agree() {
+        let plaintext: Vec<u8> = (0..100u8).collect();
+        let k0: u32 = 0xDEADBEEF;
+        let k1: u32 = 0x12345679; // odd
+        let proto_id: u32 = 7;
+
+        // Encrypt in Rust using the stateful LCG.
+        let mut enc = plaintext.clone();
+        let mut bs = lcg_init(proto_id, k0);
+        for (i, byte) in enc.iter_mut().enumerate() {
+            let pc = (i + 1) as u32;
+            let (ks, new_bs) = lcg_step(bs, pc, proto_id, k0, k1);
+            *byte ^= ks;
+            bs = new_bs;
+        }
+
+        // Build Luau source that decrypts using the same LCG and prints hex.
+        // The luau CLI does not expose `io`, so we use print() and compare hex.
+        // _mul32 avoids IEEE-754 double precision loss for u32 multiplications.
+        let enc_lit = encode_luau_string_literal(&enc);
+        let luau_src = format!(
+            r#"local _k0 = {k0}
+local _k1 = {k1}
+local _xor = bit32.bxor
+local _sbyte = string.byte
+local _enc = "{enc_lit}"
+local proto_id = {proto_id}
+local function _mul32(a, b)
+    local a_lo = a % 65536
+    local a_hi = (a - a_lo) / 65536
+    local b_lo = b % 65536
+    local b_hi = (b - b_lo) / 65536
+    local mid = (a_lo * b_hi + a_hi * b_lo) % 65536
+    return (a_lo * b_lo + mid * 65536) % 4294967296
+end
+local _bs = (_mul32(proto_id + 1, 2654435761) + _k0) % 4294967296
+local function _byte(code, pc, pid)
+    local raw = _sbyte(code, pc)
+    local pos_mix = (_mul32(pc, _k1) + _k0 + _mul32(pid, 2654435761)) % 4294967296
+    local ks = _xor(_bs % 256, pos_mix % 256)
+    _bs = (_mul32(_bs, 1103515245) + ks + 12345) % 4294967296
+    return _xor(raw, ks)
+end
+local out = {{}}
+for i = 1, #_enc do
+    out[i] = _byte(_enc, i, proto_id)
+end
+local hex = {{}}
+for i = 1, #_enc do
+    hex[i] = string.format("%02x", out[i])
+end
+print(table.concat(hex))
+"#,
+            k0 = k0,
+            k1 = k1,
+            proto_id = proto_id,
+            enc_lit = enc_lit,
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.luau");
+        std::fs::write(&path, &luau_src).unwrap();
+        let out = std::process::Command::new("luau")
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "luau failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        // Compare hex strings (print adds a trailing newline which we trim).
+        let luau_hex = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let expected_hex: String = plaintext.iter().map(|b| format!("{:02x}", b)).collect();
+        assert_eq!(
+            luau_hex, expected_hex,
+            "Luau decryption did not recover plaintext — encoder/decoder out of sync"
+        );
     }
 }

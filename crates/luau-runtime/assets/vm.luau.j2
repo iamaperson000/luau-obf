@@ -31,32 +31,45 @@ local _KBS = {
 local _k0 = {{ k0 }}
 local _k1 = {{ k1 }}
 
-local function _byte(code, pc, pid)
-    local b = _sbyte(code, pc)
-    local mixed = ((pc * _k1) + _k0 + (pid * 2654435761)) % 4294967296
-    return _xor(b, mixed % 256)
+-- _mul32: compute (a * b) % 2^32 avoiding IEEE-754 double precision loss.
+-- Reused from the byte-cipher; defined at module scope for _decrypt use.
+local function _mul32_const(a, b)
+    local a_lo = a % 65536
+    local a_hi = (a - a_lo) / 65536
+    local b_lo = b % 65536
+    local b_hi = (b - b_lo) / 65536
+    local mid = (a_lo * b_hi + a_hi * b_lo) % 65536
+    return (a_lo * b_lo + mid * 65536) % 4294967296
 end
 
-local function _decrypt(enc, proto_id)
+-- Plan 32 Task 2: _decrypt now accepts a bs_seed that is the byte-cipher's
+-- final LCG state after pre-decrypting the bytecode. Mixing it in means that
+-- recovering constants statically requires simulating the full bytecode LCG.
+local function _decrypt(enc, proto_id, bs_seed)
     local ka = _KAS[proto_id + 1]
     local kb = _KBS[proto_id + 1]
     local out = {}
     local salt_term = (proto_id * 7919) % 4294967296
+    local mix = bs_seed
     for i = 1, #enc do
         local b = _sbyte(enc, i)
         local idx = ((i - 1) % 32) + 1
-        local pos = ((i - 1) + salt_term) % 256
-        out[i] = _schar(_xor(_xor(_xor(b, ka[idx]), pos), kb[idx]))
+        local pos = ((i - 1) + salt_term + (mix % 256)) % 256
+        local plain = _xor(_xor(_xor(b, ka[idx]), pos), kb[idx])
+        out[i] = _schar(plain)
+        mix = (_mul32_const(mix, 1103515245) + plain + 12345) % 4294967296
     end
     return _tconcat(out)
 end
 
 local function _cw(bytes) return { _e = bytes } end
 
-local function _const(consts, idx, proto_id)
+-- Plan 32 Task 2: _const forwards bs_seed to _decrypt so the constant cipher
+-- is tangled with the byte-cipher final state.
+local function _const(consts, idx, proto_id, bs_seed)
     local c = consts[idx]
     if type(c) == "table" and c._e then
-        local raw = _decrypt(c._e, proto_id)
+        local raw = _decrypt(c._e, proto_id, bs_seed)
         local tag = _sbyte(raw, 1)
         local len_lo = _sbyte(raw, 2)
         local len_hi = _sbyte(raw, 3)
@@ -85,23 +98,58 @@ local CODE = {
 {% for code_lit in codes %}    {{ code_lit }},
 {% endfor %}}
 
--- Read a little-endian u16 at byte offset `pos` (1-based) of `code`.
-local function read_u16(code, pos, pid)
-    local lo = _byte(code, pos, pid)
-    local hi = _byte(code, pos + 1, pid)
-    return lo + hi * 256
-end
-
--- Read signed i16 at 1-based offset.
-local function read_i16(code, pos, pid)
-    local v = read_u16(code, pos, pid)
-    if v >= 32768 then v = v - 65536 end
-    return v
-end
-
--- Forward-declare vm_call and handler groups so they can close over each other.
+-- Forward-declare vm_call so closures (Closure op) can reference it.
 local vm_call
-local handle_group_a, handle_group_b, handle_group_c
+
+vm_call = function(proto_id, args, nargs, upvals)
+    local code = CODE[proto_id + 1]
+    local consts = CONSTS[proto_id + 1]
+
+    -- Stateful LCG keystream (Plan 32 Task 1): pre-decrypt all bytecode bytes
+    -- using a single sequential pass so the LCG state is always coherent.
+    -- The dispatch loop and handler groups then read from `plain[]` directly,
+    -- which avoids state desync when jumps cause bytecodes to be re-visited.
+    --
+    -- _mul32: compute (a * b) % 2^32 avoiding IEEE-754 double precision loss.
+    -- Doubles have 53-bit mantissa; a*b can reach ~4.7e18 (> 2^53) for u32 inputs.
+    -- Split into 16-bit halves: (a_hi*2^16 + a_lo)*(b_hi*2^16 + b_lo) mod 2^32
+    -- = ((a_hi*b_lo + a_lo*b_hi) mod 2^16)*2^16 + a_lo*b_lo, all terms < 2^53.
+    local function _mul32(a, b)
+        local a_lo = a % 65536
+        local a_hi = (a - a_lo) / 65536
+        local b_lo = b % 65536
+        local b_hi = (b - b_lo) / 65536
+        local mid = (a_lo * b_hi + a_hi * b_lo) % 65536
+        return (a_lo * b_lo + mid * 65536) % 4294967296
+    end
+
+    -- Pre-decrypt all bytecodes in one sequential pass.
+    local _bs = (_mul32(proto_id + 1, 2654435761) + _k0) % 4294967296
+    local plain = {}
+    for _i = 1, #code do
+        local _raw = _sbyte(code, _i)
+        local _pos_mix = (_mul32(_i, _k1) + _k0 + _mul32(proto_id, 2654435761)) % 4294967296
+        local _ks = _xor(_bs % 256, _pos_mix % 256)
+        _bs = (_mul32(_bs, 1103515245) + _ks + 12345) % 4294967296
+        plain[_i] = _xor(_raw, _ks)
+    end
+    -- Plan 32 Task 2: after the pre-decryption pass, _bs holds the byte-cipher's
+    -- final LCG state. Save it as the seed for the constant-pool cipher.
+    local _const_bs_seed = _bs
+
+    -- Helpers reading from the pre-decrypted `plain` table (no LCG needed here).
+    local function read_u16(_, pos, _)
+        return plain[pos] + plain[pos + 1] * 256
+    end
+
+    -- Read signed i16 at 1-based offset from plain[].
+    local function read_i16(_, pos, _)
+        local v = plain[pos] + plain[pos + 1] * 256
+        if v >= 32768 then v = v - 65536 end
+        return v
+    end
+
+    local handle_group_a, handle_group_b, handle_group_c
 
 -- Group A: arithmetic + comparison (13 ops)
 handle_group_a = function(op, regs, code, pc, proto_id, consts)
@@ -185,7 +233,8 @@ handle_group_a = function(op, regs, code, pc, proto_id, consts)
 end
 
 -- Group B: load / move / global / table / upval / vararg / superop (14 ops)
-handle_group_b = function(op, regs, code, pc, proto_id, consts, upvals, frame_varargs)
+-- _const_bs_seed: byte-cipher final LCG state (Plan 32 Task 2) for constant decryption.
+handle_group_b = function(op, regs, code, pc, proto_id, consts, upvals, frame_varargs, _const_bs_seed)
     if op == {{ ops.LoadNil }} then
         local a = read_u16(code, pc, proto_id); pc = pc + 2
         regs[a] = nil
@@ -201,7 +250,7 @@ handle_group_b = function(op, regs, code, pc, proto_id, consts, upvals, frame_va
     elseif op == {{ ops.LoadConst }} then
         local a = read_u16(code, pc, proto_id); pc = pc + 2
         local b = read_u16(code, pc, proto_id); pc = pc + 2
-        regs[a] = _const(consts, b + 1, proto_id)
+        regs[a] = _const(consts, b + 1, proto_id, _const_bs_seed)
         return pc, "continue"
     elseif op == {{ ops.Move }} then
         local a = read_u16(code, pc, proto_id); pc = pc + 2
@@ -211,12 +260,12 @@ handle_group_b = function(op, regs, code, pc, proto_id, consts, upvals, frame_va
     elseif op == {{ ops.GetGlobal }} then
         local a = read_u16(code, pc, proto_id); pc = pc + 2
         local b = read_u16(code, pc, proto_id); pc = pc + 2
-        regs[a] = _ENV_[_const(consts, b + 1, proto_id)]
+        regs[a] = _ENV_[_const(consts, b + 1, proto_id, _const_bs_seed)]
         return pc, "continue"
     elseif op == {{ ops.SetGlobal }} then
         local a = read_u16(code, pc, proto_id); pc = pc + 2
         local b = read_u16(code, pc, proto_id); pc = pc + 2
-        _ENV_[_const(consts, a + 1, proto_id)] = regs[b]
+        _ENV_[_const(consts, a + 1, proto_id, _const_bs_seed)] = regs[b]
         return pc, "continue"
     elseif op == {{ ops.NewTable }} then
         local a = read_u16(code, pc, proto_id); pc = pc + 2
@@ -255,8 +304,8 @@ handle_group_b = function(op, regs, code, pc, proto_id, consts, upvals, frame_va
         local b1 = read_u16(code, pc, proto_id); pc = pc + 2
         local a2 = read_u16(code, pc, proto_id); pc = pc + 2
         local b2 = read_u16(code, pc, proto_id); pc = pc + 2
-        regs[a1] = _const(consts, b1 + 1, proto_id)
-        regs[a2] = _const(consts, b2 + 1, proto_id)
+        regs[a1] = _const(consts, b1 + 1, proto_id, _const_bs_seed)
+        regs[a2] = _const(consts, b2 + 1, proto_id, _const_bs_seed)
         return pc, "continue"
     end
     return pc, "miss"
@@ -306,12 +355,12 @@ handle_group_c = function(op, regs, code, pc, proto_id, consts, upvals, frame_va
     elseif op == {{ ops.Closure }} then
         local a = read_u16(code, pc, proto_id); pc = pc + 2
         local pid = read_u16(code, pc, proto_id); pc = pc + 2
-        -- Skip the closure_idx operand (Rust-side encoding bookkeeping only).
-        pc = pc + 2
+        -- Read (and discard) the closure_idx operand: must advance LCG for sync.
+        read_u16(code, pc, proto_id); pc = pc + 2
         local n_upvals = read_u16(code, pc, proto_id); pc = pc + 2
         local new_upvals = {}
         for u = 1, n_upvals do
-            local kind = _byte(code, pc, proto_id); pc = pc + 1
+            local kind = plain[pc]; pc = pc + 1
             local payload = read_u16(code, pc, proto_id); pc = pc + 2
             if kind == 0 then
                 -- LocalReg: build a cell referencing current frame's regs.
@@ -363,7 +412,7 @@ handle_group_c = function(op, regs, code, pc, proto_id, consts, upvals, frame_va
     elseif op == {{ ops.BuildResults }} then
         local a = read_u16(code, pc, proto_id); pc = pc + 2
         local sp = read_u16(code, pc, proto_id); pc = pc + 2
-        pc = pc + 2  -- skip the br_idx operand (Rust-side encoding bookkeeping)
+        read_u16(code, pc, proto_id); pc = pc + 2  -- br_idx: read to advance LCG, discard value
         local n_values = read_u16(code, pc, proto_id); pc = pc + 2
         local tbl = {}
         local count = 0
@@ -391,15 +440,14 @@ handle_group_c = function(op, regs, code, pc, proto_id, consts, upvals, frame_va
     return pc, "miss"
 end
 
-vm_call = function(proto_id, args, nargs, upvals)
-    local code = CODE[proto_id + 1]
-    local consts = CONSTS[proto_id + 1]
-    local num_params = _byte(code, 1, proto_id)
-    local num_regs = _byte(code, 2, proto_id) + _byte(code, 3, proto_id) * 256
-    local is_vararg = _byte(code, 5, proto_id) == 1
+    -- Prologue: read from pre-decrypted plain[] table.
+    local num_params = plain[1]
+    local num_regs = plain[2] + plain[3] * 256
+    -- plain[4] = num_upvals (not used at runtime; decrypted above)
+    local is_vararg = plain[5] == 1
     local inv = {}
     for i = 1, {{ opcodes | length }} do
-        inv[i] = _byte(code, 5 + i, proto_id)
+        inv[i] = plain[5 + i]
     end
     upvals = upvals or {}
     local regs = _tcreate(num_regs + 1)
@@ -419,13 +467,13 @@ vm_call = function(proto_id, args, nargs, upvals)
     local pc = {{ opcodes | length }} + 6
     local code_len = #code
     while pc <= code_len do
-        local raw = _byte(code, pc, proto_id)
+        local raw = plain[pc]
         local op = inv[raw]
         pc = pc + 1
         local status, val
         pc, status = handle_group_a(op, regs, code, pc, proto_id, consts)
         if status == "miss" then
-            pc, status = handle_group_b(op, regs, code, pc, proto_id, consts, upvals, frame_varargs)
+            pc, status = handle_group_b(op, regs, code, pc, proto_id, consts, upvals, frame_varargs, _const_bs_seed)
         end
         if status == "miss" then
             pc, status, val = handle_group_c(op, regs, code, pc, proto_id, consts, upvals, frame_varargs)

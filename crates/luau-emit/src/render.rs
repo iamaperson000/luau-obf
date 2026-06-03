@@ -96,12 +96,6 @@ pub fn render(
 
         let per_proto_keys = derive_per_proto_string_keys(rng, program.functions.len());
 
-        let mut consts: Vec<String> = Vec::with_capacity(program.functions.len());
-        for (i, f) in program.functions.iter().enumerate() {
-            let (ka, kb) = &per_proto_keys[i];
-            consts.push(format_const_pool(&f.consts, ka, kb, i as u64, rng)?);
-        }
-
         use rand::RngCore;
         let mut k_buf = [0u8; 8];
         rng.fill_bytes(&mut k_buf);
@@ -118,14 +112,24 @@ pub fn render(
             .map(|_| crate::encode::make_opcode_permutation(n_ops, rng))
             .collect();
 
-        // Plan 30: encode_function now needs rng for stochastic LCLC fusion.
-        // We collect encoded bytes sequentially so each proto's rng consumption
-        // is deterministic within a fixed seed.
+        // Plan 30 / Plan 32 Task 2: encode_function now returns (bytes, bs_final).
+        // bs_final is the LCG state after consuming all encrypted bytecode bytes.
+        // It is used as the seed for the constant-pool cipher so that decrypting
+        // constants requires simulating the LCG through the bytecode first.
         let mut codes: Vec<String> = Vec::with_capacity(program.functions.len());
+        let mut bs_finals: Vec<u32> = Vec::with_capacity(program.functions.len());
         for (i, f) in program.functions.iter().enumerate() {
             let (perm, inv) = &perms_and_invs[i];
-            let bytes = encode_function(f, opmap, i as u32, k0, k1, perm, inv, rng);
+            let (bytes, bs_final) = encode_function(f, opmap, i as u32, k0, k1, perm, inv, rng);
             codes.push(format!("\"{}\"", encode_luau_string_literal(&bytes)));
+            bs_finals.push(bs_final);
+        }
+
+        // Now build constant pools, seeded by each proto's bs_final.
+        let mut consts: Vec<String> = Vec::with_capacity(program.functions.len());
+        for (i, f) in program.functions.iter().enumerate() {
+            let (ka, kb) = &per_proto_keys[i];
+            consts.push(format_const_pool(&f.consts, ka, kb, i as u64, bs_finals[i], rng)?);
         }
 
         let keys_a_lits: Vec<String> = per_proto_keys.iter().map(|(a, _)| format_byte_array_literal(a)).collect();
@@ -210,11 +214,12 @@ fn format_const_pool(
     key_a: &[u8; 32],
     key_b: &[u8; 32],
     proto_salt: u64,
+    bs_seed: u32,
     rng: &mut ChaCha20Rng,
 ) -> Result<String, EmitError> {
     let mut parts = Vec::with_capacity(consts.len());
     for c in consts {
-        parts.push(format_const(c, key_a, key_b, proto_salt, rng)?);
+        parts.push(format_const(c, key_a, key_b, proto_salt, bs_seed, rng)?);
     }
     Ok(parts.join(", "))
 }
@@ -224,6 +229,7 @@ fn format_const(
     key_a: &[u8; 32],
     key_b: &[u8; 32],
     proto_salt: u64,
+    bs_seed: u32,
     rng: &mut ChaCha20Rng,
 ) -> Result<String, EmitError> {
     // Plan 12: every constant is built into a uniform BLOB_SIZE-byte blob
@@ -231,7 +237,7 @@ fn format_const(
     // then XOR-encrypted. The wrapper call site is `_cw("<bytes>")` — a
     // single argument, identical-looking regardless of constant type.
     let blob = build_constant_blob(c, rng)?;
-    let enc = encrypt_bytes(&blob, key_a, key_b, proto_salt);
+    let enc = encrypt_bytes(&blob, key_a, key_b, proto_salt, bs_seed);
     Ok(format!("_cw(\"{}\")", encode_luau_string_literal(&enc)))
 }
 
@@ -251,18 +257,38 @@ pub(crate) fn derive_per_proto_string_keys(
     out
 }
 
+/// Encrypt a constant-pool blob.
+///
+/// `bs_seed` is the byte-cipher's final LCG state after pre-decrypting the
+/// proto's bytecode (Plan 32 Task 2).  Mixing it into the constant cipher
+/// means that static decryption of constants requires simulating the LCG
+/// through the entire encrypted bytecode first.
+///
+/// The `mix` advance step uses the SAME LCG constants (1_103_515_245, 12345)
+/// as the byte-cipher so the Luau side can reuse the same formula.
 pub(crate) fn encrypt_bytes(
     plaintext: &[u8],
     key_a: &[u8; 32],
     key_b: &[u8; 32],
     proto_salt: u64,
+    bs_seed: u32,
 ) -> Vec<u8> {
     let mut out = Vec::with_capacity(plaintext.len());
+    let mut mix: u32 = bs_seed;
     for (i, b) in plaintext.iter().enumerate() {
         let ka = key_a[i % 32];
         let kb = key_b[i % 32];
-        let pos = ((i as u64).wrapping_add(proto_salt.wrapping_mul(7919)) & 0xFF) as u8;
+        let pos = ((i as u64)
+            .wrapping_add(proto_salt.wrapping_mul(7919))
+            .wrapping_add((mix & 0xFF) as u64)
+            & 0xFF) as u8;
         out.push(b ^ ka ^ pos ^ kb);
+        // Advance using plaintext byte so that Luau decryption side advances
+        // with the just-decrypted byte (symmetric).
+        mix = mix
+            .wrapping_mul(1_103_515_245)
+            .wrapping_add(*b as u32)
+            .wrapping_add(12345);
     }
     out
 }
@@ -308,13 +334,25 @@ mod tests {
         let key_b = [99u8; 32];
         let plaintext = b"print";
         let proto_salt = 3u64;
-        let enc = encrypt_bytes(plaintext, &key_a, &key_b, proto_salt);
-        let dec: Vec<u8> = enc.iter().enumerate().map(|(i, b)| {
+        let bs_seed: u32 = 0xABCD1234;
+        let enc = encrypt_bytes(plaintext, &key_a, &key_b, proto_salt, bs_seed);
+        // Decrypt by re-running the same mix sequence.
+        let mut dec = Vec::with_capacity(plaintext.len());
+        let mut mix: u32 = bs_seed;
+        for (i, b) in enc.iter().enumerate() {
             let ka = key_a[i % 32];
             let kb = key_b[i % 32];
-            let pos = ((i as u64).wrapping_add(proto_salt.wrapping_mul(7919)) & 0xFF) as u8;
-            b ^ ka ^ pos ^ kb
-        }).collect();
+            let pos = ((i as u64)
+                .wrapping_add(proto_salt.wrapping_mul(7919))
+                .wrapping_add((mix & 0xFF) as u64)
+                & 0xFF) as u8;
+            let plain = b ^ ka ^ pos ^ kb;
+            dec.push(plain);
+            mix = mix
+                .wrapping_mul(1_103_515_245)
+                .wrapping_add(plain as u32)
+                .wrapping_add(12345);
+        }
         assert_eq!(dec, plaintext);
     }
 
@@ -322,13 +360,13 @@ mod tests {
     fn encrypt_changes_bytes_for_typical_input() {
         let key_a = [1u8; 32];
         let key_b = [2u8; 32];
-        let enc = encrypt_bytes(b"hello world", &key_a, &key_b, 0);
+        let enc = encrypt_bytes(b"hello world", &key_a, &key_b, 0, 0);
         assert_ne!(enc, b"hello world");
     }
 
     #[test]
     fn empty_string_encrypts_to_empty() {
-        let enc = encrypt_bytes(b"", &[0u8; 32], &[0u8; 32], 0);
+        let enc = encrypt_bytes(b"", &[0u8; 32], &[0u8; 32], 0, 0);
         assert!(enc.is_empty());
     }
 
@@ -336,9 +374,18 @@ mod tests {
     fn different_proto_salts_change_ciphertext() {
         let key_a = [3u8; 32];
         let key_b = [4u8; 32];
-        let e1 = encrypt_bytes(b"deposit", &key_a, &key_b, 1);
-        let e2 = encrypt_bytes(b"deposit", &key_a, &key_b, 2);
+        let e1 = encrypt_bytes(b"deposit", &key_a, &key_b, 1, 0);
+        let e2 = encrypt_bytes(b"deposit", &key_a, &key_b, 2, 0);
         assert_ne!(e1, e2);
+    }
+
+    #[test]
+    fn different_bs_seeds_change_ciphertext() {
+        let key_a = [5u8; 32];
+        let key_b = [6u8; 32];
+        let e1 = encrypt_bytes(b"constant", &key_a, &key_b, 1, 0xDEADBEEF);
+        let e2 = encrypt_bytes(b"constant", &key_a, &key_b, 1, 0xCAFEBABE);
+        assert_ne!(e1, e2, "different bs_seed must produce different ciphertext");
     }
 
     #[test]
@@ -353,7 +400,7 @@ mod tests {
             Constant::Bool(true),
             Constant::Nil,
         ] {
-            let out = format_const(c, &ka, &kb, 0, &mut rng).unwrap();
+            let out = format_const(c, &ka, &kb, 0, 0, &mut rng).unwrap();
             assert!(out.starts_with("_cw(\""), "expected single-arg form: {out}");
             assert!(out.ends_with("\")"), "expected single-arg form: {out}");
         }
@@ -435,5 +482,88 @@ mod tests {
         let k1 = derive_per_proto_string_keys(&mut r1, 3);
         let k2 = derive_per_proto_string_keys(&mut r2, 3);
         assert_eq!(k1, k2);
+    }
+
+    /// Plan 32 Task 2 cross-impl test: Rust encrypt_bytes with a given bs_seed
+    /// must be decryptable by the Luau `_decrypt` function using the same bs_seed.
+    /// This validates that both sides implement the tangled constant cipher
+    /// identically.
+    #[test]
+    fn rust_luau_tangled_const_cipher_agree() {
+        let key_a = [37u8; 32];
+        let key_b = [99u8; 32];
+        let proto_id: u32 = 0; // use proto_id 0 → proto_salt = 0 → _KAS[1]/_KBS[1]
+        let proto_salt: u64 = 0;
+        let bs_seed: u32 = 0xCAFEBEEF;
+        let plaintext = b"hello tangled constants";
+
+        let enc = encrypt_bytes(plaintext, &key_a, &key_b, proto_salt, bs_seed);
+
+        // Build Luau source that decrypts using the same algorithm.
+        let ka_lit: String = key_a.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(", ");
+        let kb_lit: String = key_b.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(", ");
+        let enc_lit = encode_luau_string_literal(&enc);
+
+        let luau_src = format!(
+            r#"local _xor = bit32.bxor
+local _sbyte = string.byte
+local _schar = string.char
+local _tconcat = table.concat
+local _KAS = {{ {{ {ka} }} }}
+local _KBS = {{ {{ {kb} }} }}
+local enc = "{enc_lit}"
+local proto_id = {pid}
+local bs_seed = {bs}
+local function _mul32(a, b)
+    local a_lo = a % 65536
+    local a_hi = (a - a_lo) / 65536
+    local b_lo = b % 65536
+    local b_hi = (b - b_lo) / 65536
+    local mid = (a_lo * b_hi + a_hi * b_lo) % 65536
+    return (a_lo * b_lo + mid * 65536) % 4294967296
+end
+local function _decrypt(e, pid, seed)
+    local ka = _KAS[pid + 1]
+    local kb = _KBS[pid + 1]
+    local out = {{}}
+    local salt_term = (pid * 7919) % 4294967296
+    local mix = seed
+    for i = 1, #e do
+        local b = _sbyte(e, i)
+        local idx = ((i - 1) % 32) + 1
+        local pos = ((i - 1) + salt_term + (mix % 256)) % 256
+        local plain = _xor(_xor(_xor(b, ka[idx]), pos), kb[idx])
+        out[i] = _schar(plain)
+        mix = (_mul32(mix, 1103515245) + plain + 12345) % 4294967296
+    end
+    return _tconcat(out)
+end
+print(_decrypt(enc, proto_id, bs_seed))
+"#,
+            ka = ka_lit,
+            kb = kb_lit,
+            enc_lit = enc_lit,
+            pid = proto_id,
+            bs = bs_seed,
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tangled_const_test.luau");
+        std::fs::write(&path, &luau_src).unwrap();
+        let out = std::process::Command::new("luau")
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "luau failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let luau_result = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let expected = String::from_utf8(plaintext.to_vec()).unwrap();
+        assert_eq!(
+            luau_result, expected,
+            "Luau tangled-const decryption did not recover plaintext"
+        );
     }
 }

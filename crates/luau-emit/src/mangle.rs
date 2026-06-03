@@ -136,6 +136,12 @@ pub const MANGLE_TARGETS: &[&str] = &[
     "CONSTS", "CODE", "META",
     // Helper functions.
     "read_u16", "read_i16", "vm_call",
+    // Plan 32 Task 1: stateful LCG keystream names.
+    "_mul32", "_bs", "plain",
+    "_i", "_raw", "_pos_mix", "_ks",
+    "handle_group_a", "handle_group_b", "handle_group_c",
+    // Plan 32 Task 2: tangled constant cipher names.
+    "_mul32_const", "_const_bs_seed", "bs_seed", "mix", "salt_term", "plain_byte",
     // vm_call params and frame-locals.
     "proto_id", "args", "nargs", "upvals",
     "code", "consts", "meta", "num_params", "num_regs", "is_vararg",
