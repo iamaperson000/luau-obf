@@ -2,14 +2,16 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 25 — junk Sub-chain insertion (final pass in the
-Plans-16-25 mangling family). Each MIR basic block has a 20% chance of
-receiving a 4-instruction synthetic Sub chain at a seed-random position.
-Symmetric to Plan 21's Add/Mul chain. Combined with Plans 15-24, the
-obfuscated bytecode contains stochastic dead-store payload (Move, Add,
-Mul, Sub), opaque-true branches with junk blocks, Goto trampolines,
-operand-padded arithmetic, commuted comparisons, polarity-flipped
-branches, and decomposed constants — all per-build-seeded.
+**Status:** Plan 26 — live-operand junk arithmetic. Both the junk-arith
+(Add/Mul) and junk-sub (Sub/Sub) dead-store passes now have a ~50% chance
+per injection of using a provably-numeric VLocal from earlier in the same
+block as the first BinOp's left operand, instead of always generating two
+fresh LoadConst values. A conservative forward scan (`number_vlocals_before`)
+identifies candidate VLocals; the selection is seeded and deterministic.
+This defeats an adversary's constant-folding pivot: when the lhs is a live
+register, static folding fails without a full dataflow model. The RNG
+schedule is mode-invariant (six draws per block visit regardless of mode),
+so seed-to-output behaviour remains deterministic.
 
 ## Build
 
