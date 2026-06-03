@@ -2,7 +2,22 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 29 — Env-bound stage-0 key. The stage-0 decryption key
+**Status:** Plan 30 — Handler-fusion superoperators. The VM dispatcher now
+includes a `LoadConstLoadConst` (LCLC) superopcode that performs two
+consecutive LoadConst operations in a single 9-byte instruction (vs 10 bytes
+for two separate LoadConst instructions). Fusion is stochastic: during
+encode, each eligible pair of adjacent `LoadConst` instructions is fused with
+~50% probability, driven by the build seed via ChaCha20. Jump-target safety is
+enforced — the second instruction of a candidate pair is never fused if it is
+a jump target, ensuring no control-flow edge lands in the middle of a LCLC.
+Because the handler shape (read 4 u16s, do 2 const-table lookups) does not
+match any MIR-generated opcode, an adversary must identify LCLC independently
+rather than pattern-matching against the known 35-opcode set. The opcode count
+grows from 35 to 36; the per-proto inv table header and the VM's inv-loop
+bound both update automatically via `ALL_OPS.len()` and the `opcodes | length`
+Jinja filter respectively.
+
+Previously: Plan 29 — Env-bound stage-0 key. The stage-0 decryption key
 can now be bound to a runtime environment value (e.g.
 `tostring(game.PlaceId)`) so the obfuscated blob cannot be decrypted by
 simply running the wrapper offline in a plain `luau` interpreter. At
