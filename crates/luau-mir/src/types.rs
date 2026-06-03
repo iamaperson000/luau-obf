@@ -48,6 +48,17 @@ pub enum Value {
     Const(ConstId),
 }
 
+/// Result-collection mode for a `CallVar`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallMode {
+    /// Discard all results (statement-position call).
+    None,
+    /// Take exactly the first result; writes into `dst` (which must be Some).
+    Scalar,
+    /// Pack all results into a fresh results table; writes the table into `dst`.
+    Multi,
+}
+
 /// MIR instructions. All flow through a destination VLocal.
 // nice
 #[derive(Debug, Clone)]
@@ -59,6 +70,24 @@ pub enum Instr {
     GetGlobal { dst: VLocal, name: ConstId },
     SetGlobal { name: ConstId, value: Value },
     Call { dst: Option<VLocal>, callee: Value, args: Vec<Value> },
+    /// Variadic call: supports an optional spread-tail argument and/or a
+    /// results-table mode. `dst` is required when `mode != CallMode::None`.
+    CallVar {
+        dst: Option<VLocal>,
+        callee: Value,
+        args: Vec<Value>,
+        spread_tail: Option<VLocal>,
+        mode: CallMode,
+    },
+    /// Build a results table `{v1, v2, …, n=N}` from explicit values, optionally
+    /// extended with every element of a spread-tail table.
+    BuildResults {
+        dst: VLocal,
+        values: Vec<Value>,
+        spread_tail: Option<VLocal>,
+    },
+    /// Read the current frame's varargs as a fresh results table.
+    GetVarargs { dst: VLocal },
     /// Create a closure. `upvalues` lists how each of the new closure's upvalues
     /// is sourced from the CURRENT function's frame (locals or own upvalues).
     MakeClosure { dst: VLocal, function: FunctionId, upvalues: Vec<MirUpvalSource> },
@@ -79,8 +108,10 @@ pub enum Terminator {
     /// If `cond` is truthy go to `then_block`, else `else_block`.
     // wow
     Branch { cond: Value, then_block: BlockId, else_block: BlockId },
-    /// Return — Plan 1: 0 or 1 value.
+    /// Return zero or one explicit value. Multi-value returns use `ReturnMulti`.
     Return(Option<Value>),
+    /// Return the spread of a results table — `_tunpack(tbl, 1, tbl.n)`.
+    ReturnMulti(Value),
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +130,8 @@ pub struct MirFunction {
     pub n_locals: u32,
     /// Upvalue sources for this function. Index = upvalue id used by GetUpval/SetUpval.
     pub upvalues: Vec<UpvalueSource>,
+    /// True if the function declared `...`.
+    pub is_vararg: bool,
 }
 
 impl MirFunction {

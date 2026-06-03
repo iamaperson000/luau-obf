@@ -242,6 +242,7 @@ impl<'a> FnBuilder<'a> {
                 self.emit(Instr::GetUpval { dst, idx: *idx });
                 Ok(dst)
             }
+            HirExpr::Vararg => unimplemented!("Plan 4 Task 7"),
         }
     }
 
@@ -326,7 +327,7 @@ pub fn lower(hir: &HirProgram) -> Result<MirProgram, MirError> {
     // Main chunk: wrap top-level stmts as a parameterless function.
     let main_id = FunctionId(next_function);
     next_function += 1;
-    pending.push((main_id, HirFunction { params: Vec::new(), body: hir.main.clone(), upvalues: Vec::new() }));
+    pending.push((main_id, HirFunction { params: Vec::new(), body: hir.main.clone(), upvalues: Vec::new(), is_vararg: false }));
 
     while let Some((fid, fhir)) = pending.pop() {
         let mut builder =
@@ -347,6 +348,7 @@ pub fn lower(hir: &HirProgram) -> Result<MirProgram, MirError> {
             consts: builder.consts,
             n_locals: builder.next_local,
             upvalues: fhir.upvalues.clone(),
+            is_vararg: fhir.is_vararg,
         });
     }
     program_functions.sort_by_key(|f| f.id.0);

@@ -222,6 +222,10 @@ fn lower_stmt(b: &mut FnBuilder, stmt: &HirStmt) -> Result<(), MirError> {
             b.emit(Instr::SetUpval { idx: *upvalue, value: Value::VLocal(v) });
             Ok(())
         }
+        HirStmt::ReturnMulti(_) => unimplemented!("Plan 4 Task 7"),
+        HirStmt::LocalDeclMulti { .. } => unimplemented!("Plan 4 Task 7"),
+        HirStmt::AssignMulti { .. } => unimplemented!("Plan 4 Task 7"),
+        HirStmt::GenericFor { .. } => unimplemented!("Plan 4 Task 7"),
     }
 }
 
