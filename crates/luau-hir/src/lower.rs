@@ -408,6 +408,7 @@ fn lower_expr(
             let function = lower_function_body(lowerer, &anon.1)?;
             Ok(HirExpr::Function(function))
         }
+        E::InterpolatedString(istr) => lower_interpolated_string(lowerer, istr),
         other => Err(HirError::Unsupported(format!("expression form {other:?}"))),
     }
 }
@@ -802,6 +803,89 @@ fn lower_function_body_with_self(
         upvalues: frame.upvalues,
         is_vararg,
     })
+}
+
+fn lower_interpolated_string(
+    lowerer: &mut Lowerer,
+    istr: &full_moon::ast::luau::InterpolatedString,
+) -> Result<HirExpr, HirError> {
+    // Build a sequence of HirExprs alternating literal and tostring(expr) pieces,
+    // then concat them left-to-right.
+    let mut pieces: Vec<HirExpr> = Vec::new();
+    for seg in istr.segments() {
+        let lit_text = extract_interp_literal(&seg.literal)?;
+        if !lit_text.is_empty() {
+            pieces.push(HirExpr::Literal(HirLiteral::String(lit_text)));
+        }
+        let inner = lower_expr(lowerer, &seg.expression)?;
+        let tostring_sym = match lowerer.resolve("tostring") {
+            Resolved::Symbol(s) => HirExpr::Symbol(s),
+            Resolved::Upvalue(idx) => HirExpr::Upvalue(idx),
+        };
+        pieces.push(HirExpr::Call {
+            callee: Box::new(tostring_sym),
+            args: vec![inner],
+        });
+    }
+    let last_text = extract_interp_literal(istr.last_string())?;
+    if !last_text.is_empty() {
+        pieces.push(HirExpr::Literal(HirLiteral::String(last_text)));
+    }
+    if pieces.is_empty() {
+        return Ok(HirExpr::Literal(HirLiteral::String(String::new())));
+    }
+    // Left-fold pieces with Concat.
+    let mut iter = pieces.into_iter();
+    let mut acc = iter.next().unwrap();
+    for p in iter {
+        acc = HirExpr::BinOp(BinOp::Concat, Box::new(acc), Box::new(p));
+    }
+    Ok(acc)
+}
+
+/// Pull the raw literal text out of an interpolated-string TokenReference and
+/// unescape it (handles \n, \t, \r, \\, \`, \{, etc.). Differs from the
+/// double-quoted string unescape mainly in the set of recognized escapes.
+fn extract_interp_literal(
+    tok: &full_moon::tokenizer::TokenReference,
+) -> Result<String, HirError> {
+    use full_moon::tokenizer::TokenType;
+    match tok.token().token_type() {
+        TokenType::InterpolatedString { literal, .. } => {
+            Ok(unescape_interp(literal.as_str()))
+        }
+        other => Err(HirError::Unsupported(format!(
+            "interpolated-string segment had unexpected token type {other:?}"
+        ))),
+    }
+}
+
+fn unescape_interp(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
+                Some('\\') => out.push('\\'),
+                Some('`') => out.push('`'),
+                Some('{') => out.push('{'),
+                Some('}') => out.push('}'),
+                Some('"') => out.push('"'),
+                Some('\'') => out.push('\''),
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1437,5 +1521,59 @@ mod tests {
         let HirStmt::CompoundAssign { target, op, .. } = &f.body[0] else { panic!() };
         assert!(matches!(target, AssignTarget::Upvalue(_)));
         assert_eq!(*op, BinOp::Add);
+    }
+
+    #[test]
+    fn lowers_all_literal_interp_to_string() {
+        let e = lower_one_expr("`hello`");
+        let HirExpr::Literal(HirLiteral::String(s)) = e else {
+            panic!("expected plain string literal, got {e:?}");
+        };
+        assert_eq!(s, "hello");
+    }
+
+    #[test]
+    fn lowers_empty_interp_to_empty_string() {
+        let e = lower_one_expr("``");
+        let HirExpr::Literal(HirLiteral::String(s)) = e else { panic!() };
+        assert_eq!(s, "");
+    }
+
+    #[test]
+    fn lowers_one_segment_interp_to_concat_chain() {
+        // `a={x}` → "a=" .. tostring(x)
+        let e = lower_one_expr("`a={x}`");
+        let HirExpr::BinOp(BinOp::Concat, l, r) = e else {
+            panic!("expected Concat, got {e:?}");
+        };
+        assert!(matches!(*l, HirExpr::Literal(HirLiteral::String(ref s)) if s == "a="));
+        let HirExpr::Call { callee, args } = *r else { panic!() };
+        // Callee resolves to a Symbol (the `tostring` global).
+        assert!(matches!(*callee, HirExpr::Symbol(_)));
+        assert_eq!(args.len(), 1);
+    }
+
+    #[test]
+    fn lowers_multi_segment_interp() {
+        // `{a}+{b}={a+b}` → tostring(a) .. "+" .. tostring(b) .. "=" .. tostring(a + b)
+        let e = lower_one_expr("`{a}+{b}={a+b}`");
+        // The result is a left-folded Concat chain; just check it contains at
+        // least three Call sub-expressions to tostring.
+        fn count_calls(e: &HirExpr) -> usize {
+            match e {
+                HirExpr::Call { .. } => 1,
+                HirExpr::BinOp(_, l, r) => count_calls(l) + count_calls(r),
+                _ => 0,
+            }
+        }
+        assert_eq!(count_calls(&e), 3, "expected three tostring() calls in {e:?}");
+    }
+
+    #[test]
+    fn interp_handles_escape_sequences() {
+        // Backtick escapes \n.
+        let e = lower_one_expr("`a\\nb`");
+        let HirExpr::Literal(HirLiteral::String(s)) = e else { panic!() };
+        assert_eq!(s, "a\nb");
     }
 }
