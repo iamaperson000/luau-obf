@@ -754,4 +754,41 @@ mod tests {
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(stdout.contains("83"));
     }
+
+    #[test]
+    fn add_padding_changes_output() {
+        // A program with several `+` operations. Different seeds should
+        // produce different rewrites (rate, k choices), hence different
+        // output beyond what keystream alone provides.
+        let src = "local x = 0 \
+                   x = x + 10 \
+                   x = x + 20 \
+                   x = x + 30 \
+                   x = x + 40 \
+                   x = x + 50 \
+                   print(x)";
+        let a = obfuscate(src, Options { seed: Some([10u8; 32]) }).unwrap();
+        let b = obfuscate(src, Options { seed: Some([20u8; 32]) }).unwrap();
+        let c = obfuscate(src, Options { seed: Some([30u8; 32]) }).unwrap();
+        assert_ne!(a.output, b.output);
+        assert_ne!(b.output, c.output);
+        assert_ne!(a.output, c.output);
+    }
+
+    #[test]
+    fn add_padding_preserves_runtime_semantics() {
+        // 100 + 200 + 300 = 600. Verify the obfuscated chunk prints 600.
+        let src = "print(100 + 200 + 300)";
+        let r = obfuscate(src, Options { seed: Some([77u8; 32]) }).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("obf.luau");
+        std::fs::write(&path, &r.output).unwrap();
+        let out = std::process::Command::new("luau").arg(&path).output().unwrap();
+        assert!(out.status.success(),
+            "luau exited with status {:?}; stderr: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr));
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("600"), "expected '600' in stdout, got: {}", stdout);
+    }
 }
