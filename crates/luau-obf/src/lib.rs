@@ -23,13 +23,36 @@ pub struct EnvBinding {
     pub expected_value: String,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Options {
     /// 32-byte seed. If None, a random seed is generated and surfaced via `seed_used`.
     pub seed: Option<[u8; 32]>,
-    /// Optional environment binding. When `None` (the default), behavior is
-    /// identical to pre-Plan-29 builds — no runtime check is injected.
+    /// Optional environment binding. When `None`, no runtime host check is
+    /// injected. The `Default` impl provides a soft binding that evaluates
+    /// `type(rawget) == "function"` — true on every standard Luau host —
+    /// so `Options::default()` works out of the box on plain `luau` while
+    /// still raising the bar for static analysis.
     pub env_binding: Option<EnvBinding>,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            seed: None,
+            env_binding: Some(soft_default_env_binding()),
+        }
+    }
+}
+
+fn soft_default_env_binding() -> EnvBinding {
+    EnvBinding {
+        // Stable identity expression: always evaluates to "ok" on any Luau
+        // host where `rawget` is a function (i.e., basically every host).
+        // Mixes a runtime-side check into the key while not locking the
+        // artifact to a specific platform fingerprint.
+        runtime_expr: r#"(type(rawget) == "function" and "ok" or "fail")"#.to_string(),
+        expected_value: "ok".to_string(),
+    }
 }
 
 #[derive(Debug, Error)]
@@ -441,33 +464,34 @@ mod tests {
             "local function f(a) return a + 100 end print(f(25)) print(true)",
             Options { seed: Some([222u8; 32]), env_binding: None }
         ).unwrap();
-        // Hand-rolled scanner: find every `_aa(` pattern (underscore + 2
+        // Hand-rolled scanner: find every `_aaa(` pattern (underscore + 3
         // lowercase letters + open paren) at the start of an identifier and
         // count occurrences where the next non-whitespace char is a digit
         // followed by `, "` — the old _cw(tag, "bytes") shape.
         let bytes = r.output.as_bytes();
         let mut i = 0;
         let mut bad_call_count = 0;
-        while i + 6 < bytes.len() {
+        while i + 7 < bytes.len() {
             if bytes[i] == b'_'
                 && bytes[i + 1].is_ascii_lowercase()
                 && bytes[i + 2].is_ascii_lowercase()
-                && bytes[i + 3] == b'('
+                && bytes[i + 3].is_ascii_lowercase()
+                && bytes[i + 4] == b'('
             {
                 if i == 0
                     || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_')
                 {
-                    let next = bytes[i + 4];
+                    let next = bytes[i + 5];
                     if next.is_ascii_digit()
-                        && i + 7 < bytes.len()
-                        && bytes[i + 5] == b','
-                        && bytes[i + 6] == b' '
-                        && bytes[i + 7] == b'"'
+                        && i + 8 < bytes.len()
+                        && bytes[i + 6] == b','
+                        && bytes[i + 7] == b' '
+                        && bytes[i + 8] == b'"'
                     {
                         bad_call_count += 1;
                     }
                 }
-                i += 4;
+                i += 5;
                 continue;
             }
             i += 1;
@@ -495,17 +519,18 @@ mod tests {
         let mut blob_lengths: Vec<usize> = Vec::new();
         let bytes = stage1.as_bytes();
         let mut i = 0;
-        while i + 6 < bytes.len() {
+        while i + 7 < bytes.len() {
             if bytes[i] == b'_'
                 && bytes[i + 1].is_ascii_lowercase()
                 && bytes[i + 2].is_ascii_lowercase()
-                && bytes[i + 3] == b'('
-                && bytes[i + 4] == b'"'
+                && bytes[i + 3].is_ascii_lowercase()
+                && bytes[i + 4] == b'('
+                && bytes[i + 5] == b'"'
             {
                 if i == 0
                     || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_')
                 {
-                    let mut j = i + 5;
+                    let mut j = i + 6;
                     let mut byte_count = 0;
                     while j < bytes.len() && bytes[j] != b'"' {
                         if bytes[j] == b'\\' && j + 1 < bytes.len() {
@@ -1514,5 +1539,104 @@ mod tests {
         assert!(out.status.success(), "luau failed: {}", String::from_utf8_lossy(&out.stderr));
         assert!(stdout.contains("ANOTHER_EXPECTED_STRING"),
             "unexpected corruption without hijack: got {:?}", stdout);
+    }
+
+    // ── Plan 32 Task 6 acceptance tests ──────────────────────────────────────
+
+    /// Scan Luau source text for occurrences of `name` that appear OUTSIDE
+    /// of string literals.  Returns true if no such occurrence is found.
+    fn no_bare_identifier(src: &str, name: &str) -> bool {
+        let bytes = src.as_bytes();
+        let needle = name.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            // Skip string literals verbatim.
+            if bytes[i] == b'"' || bytes[i] == b'\'' {
+                let quote = bytes[i];
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                        i += 2;
+                        continue;
+                    }
+                    let c = bytes[i];
+                    i += 1;
+                    if c == quote { break; }
+                }
+                continue;
+            }
+            // Check for identifier match at this position.
+            if bytes[i..].starts_with(needle) {
+                let end = i + needle.len();
+                // Verify it's a complete token: next char must not be alphanumeric or `_`.
+                let after_ok = end >= bytes.len()
+                    || !(bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_');
+                // Verify it's not inside a member-access dot chain: prev char not `.`.
+                let before_ok = i == 0 || bytes[i - 1] != b'.';
+                // Verify the char before is not alphanumeric/underscore (we're at start
+                // of a token, not inside another identifier like `_foo_cw`).
+                let ident_start_ok = i == 0
+                    || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+                if after_ok && before_ok && ident_start_ok {
+                    return false; // found a bare occurrence
+                }
+            }
+            i += 1;
+        }
+        true
+    }
+
+    #[test]
+    fn no_semantic_names_leak_in_output() {
+        let src = r#"print("test")"#;
+        let r = obfuscate(src, Options { seed: Some([55u8; 32]), env_binding: None }).unwrap();
+
+        // These are VM-internal identifiers that must not appear as bare tokens in
+        // either the stage-0 wrapper or the decrypted stage-1 source.
+        let forbidden: &[&str] = &[
+            "handle_group_a", "handle_group_b", "handle_group_c",
+            "read_u16", "read_i16",
+            "vm_call",
+            "_const", "_decrypt", "_cw",
+            "_byte", "_byte_state",
+            "_trusted_pcall", "_trusted_sbyte", "_trusted_xor",
+            "_trusted_gethook", "_trusted_sethook",
+            "_tripwire",
+            "_crc32", "_crc_table", "_expected_crc", "_actual_crc",
+            "_const_bs_seed",
+            "_fnv_fp", "_kbase", "_bind", "_mix",
+        ];
+
+        // Check the stage-0 outer wrapper using token-aware scan (skips string literals
+        // so encrypted data bytes that happen to spell a name are not flagged).
+        for name in forbidden {
+            assert!(
+                no_bare_identifier(&r.output, name),
+                "Mangling leak in stage-0 output: '{}' found as a bare token",
+                name,
+            );
+        }
+
+        // Also check the decrypted stage-1 source text (the mangled VM template).
+        let stage1 = decrypt_stage1_from_output(&r.output);
+        for name in forbidden {
+            assert!(
+                no_bare_identifier(&stage1, name),
+                "Mangling leak in stage-1 source: '{}' found as a bare token",
+                name,
+            );
+        }
+    }
+
+    #[test]
+    fn env_binding_default_is_soft_and_works() {
+        let src = r#"print("default_works")"#;
+        let r = obfuscate(src, Options::default()).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("obf.luau");
+        std::fs::write(&path, &r.output).unwrap();
+        let out = std::process::Command::new("luau").arg(&path).output().unwrap();
+        assert!(out.status.success(), "luau failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(String::from_utf8_lossy(&out.stdout).contains("default_works"));
     }
 }
