@@ -16,6 +16,7 @@ pub mod mul_padding;
 pub mod branch_polarity;
 pub mod opaque_predicate;
 pub mod junk_arith;
+pub mod comparison_commute;
 // but how?
 /// A MIR→MIR transform.
 pub trait Pass {
@@ -77,5 +78,6 @@ pub fn default_plan() -> PassPlan {
         .push(Box::new(junk_arith::JunkArithmetic))
         .push(Box::new(add_padding::AddIdentityPadding))
         .push(Box::new(mul_padding::MulOperandScatter))
+        .push(Box::new(comparison_commute::ComparisonCommute))
         .push(Box::new(branch_polarity::BranchPolarityFlip))
 }
