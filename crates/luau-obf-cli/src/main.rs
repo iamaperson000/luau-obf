@@ -27,6 +27,11 @@ struct Args {
     /// paired with --env-bind-expr.
     #[arg(long = "env-bind-expected", requires = "env_bind_expr")]
     env_bind_expected: Option<String>,
+    /// Disable the soft host-fingerprint env binding injected by default.
+    /// When set, no runtime check is injected and the artifact runs on any
+    /// host without a key-derivation step (same behavior as pre-Plan-29).
+    #[arg(long = "no-env-bind", conflicts_with_all = ["env_bind_expr", "env_bind_expected"])]
+    no_env_bind: bool,
 }
 
 fn parse_seed(s: &str) -> Result<[u8; 32], String> {
@@ -66,11 +71,17 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let env_binding = match (args.env_bind_expr, args.env_bind_expected) {
-        (Some(expr), Some(expected)) => Some(EnvBinding { runtime_expr: expr, expected_value: expected }),
-        _ => None,
-    };
-    let opts = Options { seed, env_binding };
+    // Build options: start from the default (soft env binding) then override.
+    let mut opts = Options::default();
+    opts.seed = seed;
+    if args.no_env_bind {
+        // Explicit opt-out: disable any env binding.
+        opts.env_binding = None;
+    } else if let (Some(expr), Some(expected)) = (args.env_bind_expr, args.env_bind_expected) {
+        // Explicit custom binding overrides the soft default.
+        opts.env_binding = Some(EnvBinding { runtime_expr: expr, expected_value: expected });
+    }
+    // Otherwise opts.env_binding retains the soft default from Options::default().
     match obfuscate(&source, opts) {
         Ok(result) => {
             if !args.quiet {
