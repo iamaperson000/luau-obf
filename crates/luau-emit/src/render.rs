@@ -42,6 +42,7 @@ pub fn render(
             num_params: f.num_params,
             num_regs: std::cmp::max(f.num_regs, f.num_params),
             num_upvals: f.num_upvals,
+            is_vararg: if f.is_vararg { 1 } else { 0 },
         })
         .collect();
 
@@ -63,6 +64,7 @@ struct MetaEntry {
     num_params: u16,
     num_regs: u16,
     num_upvals: u16,
+    is_vararg: u8,  // 0 or 1
 }
 
 fn opname(k: OpKind) -> &'static str {
@@ -87,6 +89,10 @@ fn opname(k: OpKind) -> &'static str {
         OpKind::SetTable => "SetTable",
         OpKind::GetUpval => "GetUpval",
         OpKind::SetUpval => "SetUpval",
+        OpKind::CallVar => "CallVar",
+        OpKind::BuildResults => "BuildResults",
+        OpKind::Vararg => "Vararg",
+        OpKind::ReturnMulti => "ReturnMulti",
     }
 }
 

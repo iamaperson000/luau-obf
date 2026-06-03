@@ -7,12 +7,12 @@ use luau_lir::OpKind;
 
 pub struct OpMap {
     /// table[OpKind index] = opcode byte
-    forward: [u8; 31],
+    forward: [u8; 35],
 }
 
 impl OpMap {
     pub fn new(_seed: &[u8; 32]) -> Self {
-        let mut forward = [0u8; 31];
+        let mut forward = [0u8; 35];
         for (i, slot) in forward.iter_mut().enumerate() {
             *slot = (i + 1) as u8;
         }
@@ -42,6 +42,7 @@ pub const ALL_OPS: &[OpKind] = &[
     OpKind::Closure,
     OpKind::NewTable, OpKind::GetTable, OpKind::SetTable,
     OpKind::GetUpval, OpKind::SetUpval,
+    OpKind::CallVar, OpKind::BuildResults, OpKind::Vararg, OpKind::ReturnMulti,
 ];
 
 fn op_index(k: OpKind) -> usize {

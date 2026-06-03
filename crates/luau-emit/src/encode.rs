@@ -2,15 +2,14 @@ use crate::opmap::OpMap;
 use luau_lir::{BlockLabel, LirFunction, LirInstr, OpKind, Operand, UpvalSource};
 use std::collections::HashMap;
 
-/// Encode one function. Returns bytecode bytes.
 pub fn encode_function(f: &LirFunction, opmap: &OpMap) -> Vec<u8> {
     let mut instr_byte_offsets: Vec<u32> = Vec::with_capacity(f.instrs.len() + 1);
     let mut offset: u32 = 0;
-    // Track Closure-instruction count to index into f.closure_upval_sources.
     let mut closure_counter: usize = 0;
+    let mut build_results_counter: usize = 0;
     for instr in &f.instrs {
         instr_byte_offsets.push(offset);
-        offset += instr_size_for(instr, f, &mut closure_counter);
+        offset += instr_size_for(instr, f, &mut closure_counter, &mut build_results_counter);
     }
     instr_byte_offsets.push(offset);
 
@@ -24,11 +23,12 @@ pub fn encode_function(f: &LirFunction, opmap: &OpMap) -> Vec<u8> {
         label_byte.insert(*label, byte_off);
     }
 
-    let mut closure_counter_emit: usize = 0;
+    let mut closure_emit: usize = 0;
+    let mut br_emit: usize = 0;
     let mut out: Vec<u8> = Vec::with_capacity(offset as usize);
     for (i, instr) in f.instrs.iter().enumerate() {
         out.push(opmap.opcode_of(instr.op));
-        let after_this = instr_byte_offsets[i] + instr_size_for_at(instr, f, closure_counter_emit);
+        let after_this = instr_byte_offsets[i] + instr_size_for_at(instr, f, closure_emit, br_emit);
         for operand in &instr.operands {
             match operand {
                 Operand::Reg(r) => push_u16(&mut out, r.0),
@@ -43,10 +43,9 @@ pub fn encode_function(f: &LirFunction, opmap: &OpMap) -> Vec<u8> {
                 }
             }
         }
-        // Closure has a trailing variable-length upvalue source list.
         if instr.op == OpKind::Closure {
-            let sources = &f.closure_upval_sources[closure_counter_emit];
-            closure_counter_emit += 1;
+            let sources = &f.closure_upval_sources[closure_emit];
+            closure_emit += 1;
             push_u16(&mut out, sources.len() as u16);
             for src in sources {
                 match src {
@@ -60,26 +59,53 @@ pub fn encode_function(f: &LirFunction, opmap: &OpMap) -> Vec<u8> {
                     }
                 }
             }
+        } else if instr.op == OpKind::BuildResults {
+            let values = &f.build_results_values[br_emit];
+            br_emit += 1;
+            push_u16(&mut out, values.len() as u16);
+            for v in values {
+                let Operand::Reg(r) = v else { panic!("BuildResults value must be a Reg") };
+                push_u16(&mut out, r.0);
+            }
         }
     }
     out
 }
 
-fn instr_size_for(i: &LirInstr, f: &LirFunction, closure_counter: &mut usize) -> u32 {
+fn instr_size_for(
+    i: &LirInstr,
+    f: &LirFunction,
+    closure_counter: &mut usize,
+    br_counter: &mut usize,
+) -> u32 {
     let base = 1 + (i.operands.len() as u32) * 2;
     if i.op == OpKind::Closure {
         let sources = &f.closure_upval_sources[*closure_counter];
         *closure_counter += 1;
         return base + 2 + (sources.len() as u32) * 3;
     }
+    if i.op == OpKind::BuildResults {
+        let values = &f.build_results_values[*br_counter];
+        *br_counter += 1;
+        return base + 2 + (values.len() as u32) * 2;
+    }
     base
 }
 
-fn instr_size_for_at(i: &LirInstr, f: &LirFunction, closure_idx: usize) -> u32 {
+fn instr_size_for_at(
+    i: &LirInstr,
+    f: &LirFunction,
+    closure_idx: usize,
+    br_idx: usize,
+) -> u32 {
     let base = 1 + (i.operands.len() as u32) * 2;
     if i.op == OpKind::Closure {
         let sources = &f.closure_upval_sources[closure_idx];
         return base + 2 + (sources.len() as u32) * 3;
+    }
+    if i.op == OpKind::BuildResults {
+        let values = &f.build_results_values[br_idx];
+        return base + 2 + (values.len() as u32) * 2;
     }
     base
 }
@@ -102,10 +128,12 @@ mod tests {
             num_params: 0,
             num_regs: 0,
             num_upvals: 0,
+            is_vararg: false,
             consts: vec![],
             instrs: vec![LirInstr { op: OpKind::Return, operands: vec![Operand::Reg(Reg(0xFFFF))] }],
             label_positions: vec![],
             closure_upval_sources: vec![],
+            build_results_values: vec![],
         };
         let opmap = OpMap::new(&[0u8; 32]);
         let bytes = encode_function(&f, &opmap);
