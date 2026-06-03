@@ -656,4 +656,68 @@ mod tests {
         assert_ne!(a_inv_region, b_inv_region,
             "two protos have identical encrypted inv tables - permutation isn't varying");
     }
+
+    #[test]
+    fn stage0_wrapper_present() {
+        let r = obfuscate("print(1)", Options { seed: Some([121u8; 32]) }).unwrap();
+        // The wrapper invokes `loadstring(...)`. Even after mangling, the
+        // `loadstring` global stays unmangled (it's a Luau builtin).
+        assert!(r.output.contains("loadstring"));
+    }
+
+    #[test]
+    fn dispatcher_keywords_not_in_raw_output() {
+        // The stage-1 source contains the dispatcher pattern `elseif op == N then`.
+        // After encryption, no such pattern should appear in the raw output.
+        let r = obfuscate("print(1 + 2)", Options { seed: Some([122u8; 32]) }).unwrap();
+        // After Plan-14 wrapping, the stage-1 source is encrypted. The string
+        // "elseif" should appear at most once (inside our stage-0 wrapper — but
+        // actually the wrapper has no `elseif`; only `if/then`). So count == 0.
+        let elseif_count = r.output.matches("elseif").count();
+        assert!(elseif_count <= 1,
+            "expected at most 1 'elseif' (in unlikely stage-0 use), found {}", elseif_count);
+    }
+
+    #[test]
+    fn opcode_dispatch_pattern_not_in_raw_output() {
+        // Pre-Plan-14, the output had `elseif _xy == 14 then` and similar
+        // arms. Post-Plan-14, no such patterns should be visible in raw text.
+        let r = obfuscate("local a = 1 + 2 print(a)",
+                          Options { seed: Some([123u8; 32]) }).unwrap();
+        // Search for any `== <integer>` pattern that looks like a dispatcher
+        // arm. After stage-0 wrapping, none should appear in raw text.
+        let bytes = r.output.as_bytes();
+        let mut arm_pattern_count = 0;
+        let mut i = 0;
+        while i + 8 < bytes.len() {
+            // Look for `== \d+ then` or `op == \d+`.
+            if &bytes[i..i + 3] == b"== " {
+                let mut j = i + 3;
+                while j < bytes.len() && bytes[j].is_ascii_digit() { j += 1; }
+                if j > i + 3 && j + 5 < bytes.len() && &bytes[j..j + 5] == b" then" {
+                    arm_pattern_count += 1;
+                }
+            }
+            i += 1;
+        }
+        assert_eq!(arm_pattern_count, 0,
+            "found {} dispatcher arm patterns in raw output", arm_pattern_count);
+    }
+
+    #[test]
+    fn output_runs_correctly_through_loadstring() {
+        // Sanity: the wrapped output executes and produces the same value
+        // as the plain source. The differential corpus harness exercises
+        // this for many programs; here we just confirm one simple case.
+        let src = "print(42)";
+        let r = obfuscate(src, Options { seed: Some([124u8; 32]) }).unwrap();
+        // Write the obfuscated chunk and execute it; capture stdout.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("obf.luau");
+        std::fs::write(&path, &r.output).unwrap();
+        let out = std::process::Command::new("luau").arg(&path).output().unwrap();
+        assert!(out.status.success(), "luau failed: {:?}", out);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("42"), "expected 42 in output, got: {stdout}");
+    }
 }

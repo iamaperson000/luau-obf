@@ -15,3 +15,6 @@ luau-emit = { path = "../luau-emit" }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
