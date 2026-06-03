@@ -1,8 +1,8 @@
 //! HIR → MIR lowering. Builds the CFG and desugars short-circuit operators.
 
 use crate::{
-    BasicBlock, BlockId, Constant, ConstId, FunctionId, Instr, MirError, MirFunction, MirProgram,
-    SymbolMap, Terminator, VLocal, Value,
+    BasicBlock, BlockId, CallMode, Constant, ConstId, FunctionId, Instr, MirError,
+    MirFunction, MirProgram, SymbolMap, Terminator, VLocal, Value,
 };
 use luau_hir::{
     BinOp, HirExpr, HirFunction, HirLiteral, HirProgram, Symbol, SymbolId, SymbolKind, UpvalueSource,
@@ -177,16 +177,23 @@ impl<'a> FnBuilder<'a> {
             }
             HirExpr::Call { callee, args } => {
                 let callee_v = self.lower_expr(callee)?;
-                let mut arg_vs = Vec::with_capacity(args.len());
-                for a in args {
-                    arg_vs.push(Value::VLocal(self.lower_expr(a)?));
-                }
+                let (arg_vs, spread) = self.lower_expr_list(args)?;
                 let dst = self.fresh_local();
-                self.emit(Instr::Call {
-                    dst: Some(dst),
-                    callee: Value::VLocal(callee_v),
-                    args: arg_vs,
-                });
+                if spread.is_some() {
+                    self.emit(Instr::CallVar {
+                        dst: Some(dst),
+                        callee: Value::VLocal(callee_v),
+                        args: arg_vs,
+                        spread_tail: spread,
+                        mode: CallMode::Scalar,
+                    });
+                } else {
+                    self.emit(Instr::Call {
+                        dst: Some(dst),
+                        callee: Value::VLocal(callee_v),
+                        args: arg_vs,
+                    });
+                }
                 Ok(dst)
             }
             HirExpr::Table(entries) => self.lower_table(entries),
@@ -214,15 +221,24 @@ impl<'a> FnBuilder<'a> {
                 });
                 let mut arg_vs = Vec::with_capacity(args.len() + 1);
                 arg_vs.push(Value::VLocal(obj_v));
-                for a in args {
-                    arg_vs.push(Value::VLocal(self.lower_expr(a)?));
-                }
+                let (rest_args, spread) = self.lower_expr_list(args)?;
+                arg_vs.extend(rest_args);
                 let dst = self.fresh_local();
-                self.emit(Instr::Call {
-                    dst: Some(dst),
-                    callee: Value::VLocal(fn_v),
-                    args: arg_vs,
-                });
+                if spread.is_some() {
+                    self.emit(Instr::CallVar {
+                        dst: Some(dst),
+                        callee: Value::VLocal(fn_v),
+                        args: arg_vs,
+                        spread_tail: spread,
+                        mode: CallMode::Scalar,
+                    });
+                } else {
+                    self.emit(Instr::Call {
+                        dst: Some(dst),
+                        callee: Value::VLocal(fn_v),
+                        args: arg_vs,
+                    });
+                }
                 Ok(dst)
             }
             HirExpr::Function(f) => {
@@ -242,15 +258,129 @@ impl<'a> FnBuilder<'a> {
                 self.emit(Instr::GetUpval { dst, idx: *idx });
                 Ok(dst)
             }
-            HirExpr::Vararg => unimplemented!("Plan 4 Task 7"),
+            HirExpr::Vararg => {
+                // Scalar context: take the first vararg. Build the table, then index it.
+                // Tail-position contexts go through lower_expr_as_results_table directly
+                // and never reach this arm.
+                let tbl = self.fresh_local();
+                self.emit(Instr::GetVarargs { dst: tbl });
+                let one_const = self.intern_const(Constant::Number(1.0));
+                let key = self.fresh_local();
+                self.emit(Instr::LoadConst { dst: key, src: one_const });
+                let dst = self.fresh_local();
+                self.emit(Instr::GetIndex {
+                    dst,
+                    obj: Value::VLocal(tbl),
+                    key: Value::VLocal(key),
+                });
+                Ok(dst)
+            }
+        }
+    }
+
+    /// Lower an HIR expression list (for call args, return values, or assign RHS).
+    /// Returns the leading non-spread values and an optional spread-tail VLocal
+    /// (a results table) if the final HIR expression can spread.
+    pub(crate) fn lower_expr_list(
+        &mut self,
+        exprs: &[HirExpr],
+    ) -> Result<(Vec<Value>, Option<VLocal>), MirError> {
+        let mut values = Vec::with_capacity(exprs.len());
+        let mut spread: Option<VLocal> = None;
+        if exprs.is_empty() {
+            return Ok((values, spread));
+        }
+        let last_idx = exprs.len() - 1;
+        for (i, e) in exprs.iter().enumerate() {
+            if i == last_idx && expr_can_spread(e) {
+                let tail = self.lower_expr_as_results_table(e)?;
+                spread = Some(tail);
+            } else {
+                values.push(Value::VLocal(self.lower_expr(e)?));
+            }
+        }
+        Ok((values, spread))
+    }
+
+    /// Lower an HIR expression in "multi-result" position. The result is a
+    /// results-table VLocal. Used for the tail of an arg list, return list,
+    /// or multi-binding RHS.
+    pub(crate) fn lower_expr_as_results_table(
+        &mut self,
+        e: &HirExpr,
+    ) -> Result<VLocal, MirError> {
+        match e {
+            HirExpr::Call { callee, args } => {
+                let callee_v = self.lower_expr(callee)?;
+                let (arg_vs, spread) = self.lower_expr_list(args)?;
+                let dst = self.fresh_local();
+                self.emit(Instr::CallVar {
+                    dst: Some(dst),
+                    callee: Value::VLocal(callee_v),
+                    args: arg_vs,
+                    spread_tail: spread,
+                    mode: CallMode::Multi,
+                });
+                Ok(dst)
+            }
+            HirExpr::MethodCall { obj, method, args } => {
+                let obj_v = self.lower_expr(obj)?;
+                let key_const = self.intern_const(Constant::String(method.clone()));
+                let key_v = self.fresh_local();
+                self.emit(Instr::LoadConst { dst: key_v, src: key_const });
+                let fn_v = self.fresh_local();
+                self.emit(Instr::GetIndex {
+                    dst: fn_v,
+                    obj: Value::VLocal(obj_v),
+                    key: Value::VLocal(key_v),
+                });
+                let mut arg_vs = Vec::with_capacity(args.len() + 1);
+                arg_vs.push(Value::VLocal(obj_v));
+                let (rest_args, spread) = self.lower_expr_list(args)?;
+                arg_vs.extend(rest_args);
+                let dst = self.fresh_local();
+                self.emit(Instr::CallVar {
+                    dst: Some(dst),
+                    callee: Value::VLocal(fn_v),
+                    args: arg_vs,
+                    spread_tail: spread,
+                    mode: CallMode::Multi,
+                });
+                Ok(dst)
+            }
+            HirExpr::Vararg => {
+                let dst = self.fresh_local();
+                self.emit(Instr::GetVarargs { dst });
+                Ok(dst)
+            }
+            // Non-spread expressions: wrap in a 1-element results table.
+            other => {
+                let v = self.lower_expr(other)?;
+                let dst = self.fresh_local();
+                self.emit(Instr::BuildResults {
+                    dst,
+                    values: vec![Value::VLocal(v)],
+                    spread_tail: None,
+                });
+                Ok(dst)
+            }
         }
     }
 
     fn lower_table(&mut self, entries: &[luau_hir::TableEntry]) -> Result<VLocal, MirError> {
+        // Detect a trailing spread: the last entry is `Array(<spread-able expr>)`.
+        let trailing_spread_idx = match entries.last() {
+            Some(luau_hir::TableEntry::Array(e)) if expr_can_spread(e) => {
+                Some(entries.len() - 1)
+            }
+            _ => None,
+        };
+
         let dst = self.fresh_local();
         self.emit(Instr::NewTable { dst });
         let mut array_idx: i64 = 1;
-        for entry in entries {
+        let end = trailing_spread_idx.unwrap_or(entries.len());
+        for entry in &entries[..end] {
             match entry {
                 luau_hir::TableEntry::Array(e) => {
                     let v = self.lower_expr(e)?;
@@ -286,7 +416,99 @@ impl<'a> FnBuilder<'a> {
                 }
             }
         }
+        if let Some(idx) = trailing_spread_idx {
+            let luau_hir::TableEntry::Array(e) = &entries[idx] else { unreachable!() };
+            let spread_tbl = self.lower_expr_as_results_table(e)?;
+            // Build a fresh shallow copy of spread_tbl, then index-copy into dst[array_idx..].
+            let tmp = self.fresh_local();
+            self.emit(Instr::BuildResults {
+                dst: tmp,
+                values: vec![],
+                spread_tail: Some(spread_tbl),
+            });
+            self.copy_results_into_table(tmp, dst, array_idx)?;
+        }
         Ok(dst)
+    }
+
+    /// Emit MIR for `for i = 1, src.n do tgt[base_idx + i - 1] = src[i] end`.
+    fn copy_results_into_table(
+        &mut self,
+        src: VLocal,
+        tgt: VLocal,
+        base_idx: i64,
+    ) -> Result<(), MirError> {
+        // Read src.n.
+        let n_key_const = self.intern_const(Constant::String("n".into()));
+        let n_key = self.fresh_local();
+        self.emit(Instr::LoadConst { dst: n_key, src: n_key_const });
+        let n = self.fresh_local();
+        self.emit(Instr::GetIndex {
+            dst: n,
+            obj: Value::VLocal(src),
+            key: Value::VLocal(n_key),
+        });
+        // i_slot = 1
+        let one_const = self.intern_const(Constant::Number(1.0));
+        let i_slot = self.fresh_local();
+        self.emit(Instr::LoadConst { dst: i_slot, src: one_const });
+        // base_const for the offset computation (base_idx - 1, so tgt[base_idx + i - 1])
+        let base_const_id = self.intern_const(Constant::Number((base_idx - 1) as f64));
+        let base_const_v = self.fresh_local();
+        self.emit(Instr::LoadConst { dst: base_const_v, src: base_const_id });
+        let step_const = self.intern_const(Constant::Number(1.0));
+        let step_v = self.fresh_local();
+        self.emit(Instr::LoadConst { dst: step_v, src: step_const });
+
+        let header = self.new_block();
+        let body_block = self.new_block();
+        let exit = self.new_block();
+        self.set_terminator(Terminator::Goto(header));
+        self.switch_to(header);
+        let cmp = self.fresh_local();
+        self.emit(Instr::BinOp {
+            dst: cmp,
+            op: luau_hir::BinOp::Le,
+            lhs: Value::VLocal(i_slot),
+            rhs: Value::VLocal(n),
+        });
+        self.set_terminator(Terminator::Branch {
+            cond: Value::VLocal(cmp),
+            then_block: body_block,
+            else_block: exit,
+        });
+        self.switch_to(body_block);
+        // tgt[base_const_v + i_slot] = src[i_slot]
+        let src_val = self.fresh_local();
+        self.emit(Instr::GetIndex {
+            dst: src_val,
+            obj: Value::VLocal(src),
+            key: Value::VLocal(i_slot),
+        });
+        let tgt_key = self.fresh_local();
+        self.emit(Instr::BinOp {
+            dst: tgt_key,
+            op: luau_hir::BinOp::Add,
+            lhs: Value::VLocal(base_const_v),
+            rhs: Value::VLocal(i_slot),
+        });
+        self.emit(Instr::SetIndex {
+            obj: Value::VLocal(tgt),
+            key: Value::VLocal(tgt_key),
+            value: Value::VLocal(src_val),
+        });
+        // i = i + 1
+        let new_i = self.fresh_local();
+        self.emit(Instr::BinOp {
+            dst: new_i,
+            op: luau_hir::BinOp::Add,
+            lhs: Value::VLocal(i_slot),
+            rhs: Value::VLocal(step_v),
+        });
+        self.emit(Instr::Move { dst: i_slot, src: new_i });
+        self.set_terminator(Terminator::Goto(header));
+        self.switch_to(exit);
+        Ok(())
     }
 
     fn lower_short_circuit(
@@ -353,6 +575,10 @@ pub fn lower(hir: &HirProgram) -> Result<MirProgram, MirError> {
     }
     program_functions.sort_by_key(|f| f.id.0);
     Ok(MirProgram { functions: program_functions })
+}
+
+fn expr_can_spread(e: &HirExpr) -> bool {
+    matches!(e, HirExpr::Call { .. } | HirExpr::MethodCall { .. } | HirExpr::Vararg)
 }
 
 #[cfg(test)]
