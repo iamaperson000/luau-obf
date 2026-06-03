@@ -2,12 +2,13 @@
 
 Rust-implemented Luau obfuscator. VM-based.
 
-**Status:** Plan 11 — constant pool and proto-header uniformity. The top-level
-META table is gone (proto headers fold into each function's encrypted bytecode
-prologue). Every constant of every type is uniformly wrapped as `_cw(tag,
-bytes)` — strings, numbers, booleans, and nil all encrypt the same way, so
-reading the constant pool no longer tells you "this proto has N strings and
-M numbers." Full differential corpus still passes under every seed.
+**Status:** Plan 12 — every encrypted constant is now a uniform fixed-size
+64-byte blob with the type tag and original length hidden inside the
+encrypted payload. The wrapper call site is `_cw("<bytes>")` — a single
+argument, identical-looking regardless of whether the constant is a string,
+number, boolean, or nil. The previous structural fingerprints (counting
+strings vs numbers per proto, inferring string length from ciphertext) are
+closed.
 
 ## Build
 
