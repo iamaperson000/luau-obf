@@ -1,5 +1,5 @@
 # luau-obf
-
+<img width="1196" height="634" alt="Screenshot 2026-06-08 at 12 59 28 PM" src="https://github.com/user-attachments/assets/c7c70813-46f1-4eab-948c-97ace1c8aab1" />
 Rust-implemented Luau obfuscator. VM-based.
 
 **Status:** Plan 31 — Dispatcher split via closure groups. The single monolithic
@@ -103,6 +103,7 @@ cargo test --workspace --release
 ## AI Disclosure
 
 AI was used for writing the docs and some funky VM stuff I don't yet understand.
+
 
 
 ## Architecture
