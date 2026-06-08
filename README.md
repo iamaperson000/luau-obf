@@ -1,6 +1,5 @@
 # luau-obf
-<img width="598" height="317" alt="Screenshot 2026-06-08 at 12 59 28 PM" src="https://github.com/user-attachments/assets/c7c70813-46f1-4eab-948c-97ace1c8aab1" />
-<img width="598" height="317" alt="Screenshot 2026-06-08 at 1 00 31 PM" src="https://github.com/user-attachments/assets/906b6fbd-53fc-4637-99ca-4d8c06dafc9c" />
+<img width="598" height="317" alt="Screenshot 2026-06-08 at 12 59 28 PM" src="https://github.com/user-attachments/assets/c7c70813-46f1-4eab-948c-97ace1c8aab1" /><img width="598" height="317" alt="Screenshot 2026-06-08 at 1 00 31 PM" src="https://github.com/user-attachments/assets/906b6fbd-53fc-4637-99ca-4d8c06dafc9c" />
 
 Rust-implemented Luau obfuscator. VM-based.
 
